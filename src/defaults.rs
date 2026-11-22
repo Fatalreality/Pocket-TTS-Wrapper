@@ -4,6 +4,9 @@ pub const DEFAULT_LANGUAGE: &str = "english";
 pub const DEFAULT_SAMPLER_DECODE_STEPS: usize = 1;
 pub const DEFAULT_EOS_THRESHOLD: f32 = -4.0;
 pub const MAX_TOKEN_PER_CHUNK: usize = 50;
+/// Decoder frames replayed (audio dropped) before a teacher-forced chunk so its
+/// Mimi state continues the previous chunk instead of starting fresh.
+pub const DECODER_WARMUP_FRAMES: usize = 12;
 /// Chunk size when each chunk continues the previous one: its text also carries that chunk's.
 pub const MAX_TOKEN_PER_CHUNK_TEACHER_FORCED: usize = 25;
 

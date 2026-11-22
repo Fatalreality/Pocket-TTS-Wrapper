@@ -479,10 +479,24 @@ impl<Q: CpuBackend> TtsModel<Q> {
             _ => None,
         };
 
+        // Teacher-forced chunks replay the previous chunk's last frames through the Mimi decoder
+        // (audio dropped) so its state continues instead of starting fresh.
+        let warmup: Option<Tensor<Q::T, Q::B>> = match forced_latents {
+            Some(latents) => {
+                let frames = latents.dim(1usize)?;
+                let n = frames.min(defaults::DECODER_WARMUP_FRAMES);
+                if n == 0 {
+                    None
+                } else {
+                    Some(latents.narrow(1usize, frames - n..frames)?.contiguous()?)
+                }
+            }
+            None => None,
+        };
         let sample_rate = self.sample_rate();
         let (latent_tx, latent_rx) = std::sync::mpsc::channel::<Option<Tensor<Q::T, Q::B>>>();
         let (generated, decoded) = std::thread::scope(|s| {
-            let decoder = s.spawn(move || self.decode_worker(latent_rx, on_chunk));
+            let decoder = s.spawn(move || self.decode_worker(latent_rx, on_chunk, warmup));
             let generated = self.autoregressive_generation(
                 &mut state,
                 first_input,
@@ -578,12 +592,18 @@ impl<Q: CpuBackend> TtsModel<Q> {
         &self,
         latent_rx: std::sync::mpsc::Receiver<Option<Tensor<Q::T, Q::B>>>,
         on_chunk: &mut (dyn FnMut(&[f32]) -> Result<()> + Send),
+        warmup: Option<Tensor<Q::T, Q::B>>,
     ) -> Result<usize> {
         let mut mimi_state = self.model.init_mimi_state(1)?;
         // A fresh Mimi decoder state puts a small step in its first samples, heard as a click at
-        // the start of every chunk: fade the first 5 ms in.
+        // the start of every chunk: fade the first 5 ms in. Teacher-forced chunks skip the fade
+        // because the decoder is warmed up from the previous chunk's latents.
         let fade_len = self.sample_rate() / 200;
-        let mut fade_in = true;
+        let mut fade_in = warmup.is_none();
+        if let Some(warmup) = &warmup {
+            // Replay the previous chunk's last frames so the audio follows on (output dropped).
+            let _ = self.model.decode_latent(warmup, &mut mimi_state)?;
+        }
         let mut total = 0;
         while let Ok(Some(latent)) = latent_rx.recv() {
             let mut latents = vec![latent];
