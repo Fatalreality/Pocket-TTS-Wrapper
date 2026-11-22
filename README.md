@@ -81,8 +81,6 @@ The token is stored in `~/.cache/huggingface/token` and reused. Full walkthrough
 | `configs/` | Model YAML configs vendored from upstream Pocket TTS, embedded at compile time |
 | `docs/` | User guides bundled into the installer, plus the README screenshot |
 | `capabilities/`, `src-tauri/` | Tauri permissions and app icon |
-| `dont-touch/` | Local-only leftovers: old duplicate UI, DWM probe crate, screenshots, attachments |
-| `github-release/` | Local staging for release assets (installer, portable exe, guides) — not committed |
 
 ## Credits & license
 
