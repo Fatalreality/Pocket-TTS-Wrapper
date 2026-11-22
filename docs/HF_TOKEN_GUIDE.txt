@@ -1,0 +1,38 @@
+================================================================================
+              HUGGING FACE ACCESS TOKEN SETUP FOR POCKET TTS
+================================================================================
+
+Why do I need a Hugging Face Token?
+-----------------------------------
+Pocket TTS includes 27 built-in voices that work 100% offline out of the box with
+NO token required.
+
+A Hugging Face token is ONLY needed for arbitrary VOICE CLONING (recording or 
+importing your own custom audio voices). The voice cloning neural weights 
+(model.safetensors) are hosted in Kyutai's gated Hugging Face repository, which 
+requires users to accept their open terms of service before downloading.
+
+Quick 3-Step Setup:
+-------------------
+
+1. ACCEPT TERMS:
+   Open this link in your web browser:
+   https://huggingface.co/kyutai/pocket-tts
+   Log into Hugging Face (or sign up for free) and click "Agree and access repository".
+
+2. CREATE TOKEN:
+   Open your Hugging Face Settings:
+   https://huggingface.co/settings/tokens
+   Click "Create new token".
+   - Name: PocketTTS
+   - Permission: Read
+   Click "Generate token" and copy the token string (starts with "hf_...").
+
+3. PASTE IN APP:
+   Open Pocket TTS.
+   In the "Voice Clone" card (right column), locate the "Hugging Face Access" box.
+   Paste your token into the box and click "Save".
+   The status will turn green ("✓ Token Saved" / "✓ Cloning Ready").
+
+You can now clone any voice via microphone or audio file!
+================================================================================

@@ -1,0 +1,327 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Pocket TTS</title>
+  <link rel="icon" type="image/png" href="app-icon.png" />
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div class="shell">
+    <!-- Floating glass capsule: identity + live state -->
+    <header class="topbar glass-panel" data-tauri-drag-region>
+      <div class="brand" data-tauri-drag-region>
+        <img src="app-icon.png" alt="Pocket TTS icon" class="app-brand-icon" />
+        <div class="brand-text">
+          <h1 class="name">Pocket TTS</h1>
+          <p class="sub">Kyutai · CPU text-to-speech</p>
+        </div>
+      </div>
+
+      <div class="status-strip" data-tauri-drag-region>
+        <span class="status-chip">
+          <span class="led" id="led-model" aria-hidden="true"></span>
+          <span id="chip-model">Model idle</span>
+        </span>
+        <span class="status-chip" id="chip-voices">Voices —</span>
+        <span class="status-chip" id="chip-output">No audio</span>
+      </div>
+
+      <div class="theme-controls">
+        <div class="surface-controls" role="group" aria-label="Window transparency">
+          <button
+            type="button"
+            class="surface-pill active"
+            id="bt-surface-glass"
+            data-surface="glass"
+            title="Transparent glass — desktop shows through"
+            aria-pressed="true"
+          >◐</button>
+          <button
+            type="button"
+            class="surface-pill"
+            id="bt-surface-solid"
+            data-surface="solid"
+            title="High visibility — more opaque tabs and pills"
+            aria-pressed="false"
+          >▣</button>
+          <button
+            type="button"
+            class="surface-pill"
+            id="bt-surface-acrylic"
+            data-surface="acrylic"
+            title="Windows acrylic backdrop"
+            aria-pressed="false"
+          >◈</button>
+        </div>
+        <button
+          type="button"
+          class="theme-pill"
+          id="bt-theme"
+          title="Toggle light/dark glass tint"
+          aria-label="Toggle theme"
+        >
+          <span class="theme-opt sun" aria-hidden="true">☀</span>
+          <span class="theme-opt moon" aria-hidden="true">☾</span>
+        </button>
+        <button
+          type="button"
+          class="theme-pill theme-switcher"
+          id="bt-theme-variant"
+          title="Switch theme variant"
+          aria-label="Switch theme variant"
+        >
+          <span class="theme-opt" aria-hidden="true">✨</span>
+        </button>
+      </div>
+    </header>
+
+    <!-- One large frosted deck holding the workspace -->
+    <main class="deck glass-panel">
+      <div class="grid">
+        <!-- COLUMN 1: Generate + Playback -->
+        <div class="col col-left">
+          <section class="card card-strong gen-card">
+            <div class="card-head">
+              <h2>Generate</h2>
+              <span class="card-tag">Script</span>
+            </div>
+            <div class="field grow-field">
+              <label for="text">Text to speak</label>
+              <textarea id="text" placeholder="Type anything to synthesize…"></textarea>
+              <div class="counter"><span id="chars">0</span> chars</div>
+            </div>
+            <button type="button" class="btn primary pill-btn" id="bt-generate">
+              Generate speech
+            </button>
+            <div class="spinner" id="gen-spinner" style="display:none">
+              <div class="dot"></div><div class="dot"></div><div class="dot"></div>
+            </div>
+            <div class="status" id="gen-status"></div>
+          </section>
+
+          <section class="card play-card">
+            <div class="card-head">
+              <h2>Playback</h2>
+              <span class="card-tag">Output</span>
+            </div>
+            <audio id="audio" preload="none"></audio>
+
+            <div class="transport-row">
+              <button type="button" class="transport-btn" id="bt-play" title="Play" aria-label="Play">▶</button>
+              <button type="button" class="transport-btn" id="bt-pause" title="Pause" aria-label="Pause">❚❚</button>
+              <input
+                type="range"
+                class="scrub-slider"
+                id="audio-scrub"
+                min="0"
+                max="100"
+                step="0.1"
+                value="0"
+                aria-label="Playback position"
+              />
+            </div>
+
+            <div class="waveform-well">
+              <canvas id="waveform"></canvas>
+            </div>
+
+            <div class="playerinfo-bar" id="playerinfo">
+              <button type="button" class="save-link" id="bt-save">Save WAV</button>
+              <span class="readout">
+                <span class="readout-lbl">Duration</span>
+                <span class="readout-val" id="dur-val">–</span>
+              </span>
+              <span class="readout">
+                <span class="readout-lbl">Rate</span>
+                <span class="readout-val" id="rate-val">–</span>
+              </span>
+            </div>
+          </section>
+        </div>
+
+        <!-- COLUMN 2: Model + Voice -->
+        <div class="col col-mid">
+          <section class="card model-card">
+            <div class="card-head">
+              <h2>Model</h2>
+              <span class="card-tag">Engine</span>
+            </div>
+            <div class="field">
+              <div class="select-wrap">
+                <select id="language" aria-label="Language"></select>
+              </div>
+            </div>
+
+            <div class="field switch-row">
+              <div class="switch-label">
+                <span class="main-lbl">Quantize</span>
+                <span class="sub-lbl">(int8, lower memory)</span>
+              </div>
+              <label class="switch" aria-label="Quantize int8">
+                <input type="checkbox" id="quantize" />
+                <span class="slider"></span>
+              </label>
+            </div>
+
+            <button type="button" class="btn glass-pill" id="bt-load">Load model</button>
+            <div class="progress-wrap">
+              <div class="progress" id="model-progress"></div>
+            </div>
+            <div class="status" id="model-status">Not loaded</div>
+          </section>
+
+          <section class="card voice-card">
+            <div class="card-head-row">
+              <h2>Voice</h2>
+              <div class="gender-filter-bar">
+                <button type="button" class="filter-pill active" data-gender="all">All</button>
+                <button type="button" class="filter-pill" data-gender="female">♀ Female</button>
+                <button type="button" class="filter-pill" data-gender="male">♂ Male</button>
+              </div>
+            </div>
+            <div class="field">
+              <div class="voicegrid" id="voicegrid"></div>
+            </div>
+            <div class="voice-footer">
+              <button type="button" class="btn glass-pill" id="bt-voice-pick">
+                Choose audio or .safetensors voice…
+              </button>
+              <div class="mini-chip" id="voice-chip">none</div>
+            </div>
+          </section>
+        </div>
+
+        <!-- COLUMN 3: Voice Clone + Advanced -->
+        <div class="col col-right">
+          <section class="card clone-card">
+            <div class="card-head">
+              <h2>Voice Clone</h2>
+              <span class="card-tag">Reference</span>
+            </div>
+
+            <button type="button" class="btn glass-pill split-pill record-pill" id="bt-record">
+              <span class="rec-left">
+                <span class="rec-dot" id="rec-icon">●</span>
+                <span id="rec-label">Record voice</span>
+              </span>
+              <span class="inline-badge" id="rec-chip">none</span>
+            </button>
+
+            <button type="button" class="btn glass-pill split-pill" id="bt-clone-import">
+              <span>Import audio file…</span>
+              <span class="inline-badge" id="clone-import-chip">none</span>
+            </button>
+
+            <button type="button" class="btn glass-pill split-pill" id="bt-clone-safetensors">
+              <span>Import voice clone (.safetensors)…</span>
+              <span class="inline-badge" id="clone-safetensors-chip">none</span>
+            </button>
+
+            <button type="button" class="btn glass-pill split-pill" id="bt-clone">
+              <span>Export voice clone (.safetensors)…</span>
+              <span class="inline-badge" id="clone-chip">none</span>
+            </button>
+            <div class="status" id="clone-status"></div>
+
+            <div class="hf-auth-box" id="hf-auth-box">
+              <div class="hf-header">
+                <span class="hf-title">Hugging Face Access</span>
+                <span class="hf-badge" id="hf-badge">Checking…</span>
+              </div>
+              <div class="hf-row">
+                <input
+                  type="password"
+                  id="hf-token-input"
+                  class="hf-input"
+                  placeholder="Paste hf_... token to enable cloning"
+                  autocomplete="off"
+                />
+                <button type="button" class="btn glass-pill hf-save-btn" id="bt-save-hf-token">
+                  Save
+                </button>
+              </div>
+              <div class="hf-hint">
+                Required for custom voice cloning. Accept license at
+                <a href="https://huggingface.co/kyutai/pocket-tts" target="_blank" rel="noopener" class="hf-link">kyutai/pocket-tts</a>.
+              </div>
+            </div>
+          </section>
+
+          <section class="card adv-card">
+            <div class="card-head">
+              <h2>Advanced</h2>
+              <span class="card-tag">Sampler</span>
+            </div>
+
+            <div class="slider-group">
+              <div class="slider-head">
+                <label for="temp">Temperature</label>
+                <span class="val" id="temp-val">0.3</span>
+              </div>
+              <input type="range" class="glass-range" id="temp" min="0" max="2" step="0.05" value="0.3" />
+            </div>
+
+            <div class="slider-group">
+              <div class="slider-head">
+                <label for="eos">EOS threshold</label>
+                <span class="val" id="eos-val">-4</span>
+              </div>
+              <input type="range" class="glass-range" id="eos" min="-10" max="0" step="0.1" value="-4" />
+            </div>
+
+            <div class="slider-group">
+              <div class="slider-head">
+                <label for="steps">Sampler decode steps</label>
+                <span class="val" id="steps-val">1</span>
+              </div>
+              <input type="range" class="glass-range" id="steps" min="1" max="32" step="1" value="1" />
+            </div>
+
+            <div class="slider-group">
+              <div class="slider-head">
+                <label for="maxtok">Max tokens</label>
+                <span class="val" id="maxtok-val">50</span>
+              </div>
+              <input type="range" class="glass-range" id="maxtok" min="10" max="200" step="10" value="50" />
+            </div>
+
+            <div class="slider-group">
+              <div class="slider-head">
+                <label for="nc">Noise clamp</label>
+                <span class="val" id="nc-val">default</span>
+              </div>
+              <input type="range" class="glass-range" id="nc" min="0" max="1" step="0.05" value="0.5" data-unset="true" />
+            </div>
+          </section>
+        </div>
+      </div>
+    </main>
+
+    <!-- Collapsible glass console -->
+    <div class="terminal-drawer glass-panel collapsed" id="terminal-drawer">
+      <div class="terminal-header" id="terminal-header">
+        <div class="terminal-title">
+          <span class="terminal-dot">●</span>
+          <span class="terminal-label">Console &amp; Logs</span>
+          <span class="terminal-badge" id="terminal-count">0 entries</span>
+        </div>
+        <div class="terminal-preview" id="terminal-preview">Pocket TTS engine ready.</div>
+        <div class="terminal-actions">
+          <button type="button" class="term-btn" id="bt-term-copy" title="Copy logs to clipboard">Copy</button>
+          <button type="button" class="term-btn" id="bt-term-clear" title="Clear terminal">Clear</button>
+          <button type="button" class="term-btn term-toggle" id="bt-term-toggle" title="Expand or collapse console">▲ Expand</button>
+        </div>
+      </div>
+      <div class="terminal-body" id="terminal-body">
+        <div class="terminal-empty">No log messages yet.</div>
+      </div>
+    </div>
+
+    <div class="toast" id="toast"></div>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>

@@ -1,0 +1,46 @@
+{
+  "productName": "Pocket TTS",
+  "version": "0.1.0",
+  "identifier": "com.kyutai.pocket-tts",
+  "build": {
+    "frontendDist": "./pocketGlass/ui",
+    "beforeDevCommand": "",
+    "beforeBuildCommand": ""
+  },
+  "app": {
+    "withGlobalTauri": true,
+    "windows": [
+      {
+        "label": "main",
+        "title": "Pocket TTS",
+        "width": 1100,
+        "height": 780,
+        "minWidth": 860,
+        "minHeight": 600,
+        "resizable": true,
+        "center": true,
+        "transparent": true,
+        "decorations": true
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self' tauri:; img-src 'self' data: blob: tauri:; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' data: https://fonts.gstatic.com; script-src 'self' 'unsafe-inline'; media-src 'self' blob: data: tauri:; connect-src 'self' tauri: ipc: ws: wss: http://ipc.localhost https://fonts.googleapis.com https://fonts.gstatic.com"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["nsis"],
+    "icon": ["src-tauri/icons/icon.ico"],
+    "resources": {
+      "docs/README.txt": "README.txt",
+      "docs/HF_TOKEN_GUIDE.txt": "HF_TOKEN_GUIDE.txt",
+      "docs/app-icon.webp": "app-icon.webp"
+    },
+    "windows": {
+      "nsis": {
+        "installMode": "currentUser",
+        "installerIcon": "src-tauri/icons/icon.ico"
+      }
+    }
+  }
+}

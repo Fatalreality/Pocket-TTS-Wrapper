@@ -1,0 +1,13 @@
+# Rust / Tauri build output
+target/
+gen/
+**/*.rs.bak
+
+# Local-only working material
+dont-touch/
+.freebuff/
+*.log
+
+# Built and installed app copies (release assets are attached to GitHub Releases)
+pocketGlass/testrelease/
+github-release/
