@@ -378,6 +378,7 @@ impl<Q: CpuBackend> TtsModel<Q> {
         text_to_generate: &str,
         max_tokens: usize,
         frames_after_eos: Option<usize>,
+        teacher_force_previous_chunk: bool,
         stop: &AtomicBool,
         on_chunk: &mut (dyn FnMut(&[f32]) -> Result<()> + Send),
     ) -> Result<()> {
@@ -386,31 +387,72 @@ impl<Q: CpuBackend> TtsModel<Q> {
         let chunks = split_into_best_sentences(
             self.tokenizer.as_ref(),
             text_to_generate,
-            max_tokens,
+            chunk_token_limit(max_tokens, teacher_force_previous_chunk),
             &self.text_options,
         )?;
+        // Without teacher forcing every chunk starts afresh from the voice prompt; with it each
+        // chunk continues the previous one, from the latents it generated.
+        let mut continuation: Option<(String, Vec<Tensor<Q::T, Q::B>>)> = None;
         for chunk in chunks {
             if stop.load(Ordering::Relaxed) {
                 break;
             }
-            let (text, frames_after_eos_guess) = prepare_text_prompt(&chunk, &self.text_options)?;
+            // The EOS delay depends on the new chunk only.
+            let (_, frames_after_eos_guess) = prepare_text_prompt(&chunk, &self.text_options)?;
             let frames = frames_after_eos.unwrap_or(frames_after_eos_guess + 2);
-            self.generate_short_text(voice, &text, frames, stop, on_chunk)?;
+            let forced = match continuation.take() {
+                Some((previous, latents)) if !latents.is_empty() => {
+                    let refs: Vec<&Tensor<Q::T, Q::B>> = latents.iter().collect();
+                    let latents = if refs.len() == 1 {
+                        latents[0].clone()
+                    } else {
+                        Tensor::cat(&refs, 1)?
+                    };
+                    Some((previous, latents))
+                }
+                _ => None,
+            };
+            let prompt_text = match &forced {
+                Some((previous, _)) => combined_chunk_text(previous, &chunk),
+                None => chunk.clone(),
+            };
+            let (text, _) = prepare_text_prompt(&prompt_text, &self.text_options)?;
+            let mut latents = Vec::new();
+            let latents_out = teacher_force_previous_chunk.then_some(&mut latents);
+            self.generate_short_text(
+                voice,
+                &text,
+                forced.as_ref().map(|(_, latents)| latents),
+                frames,
+                stop,
+                on_chunk,
+                latents_out,
+            )?;
+            if teacher_force_previous_chunk && !latents.is_empty() {
+                continuation = Some((chunk, latents));
+            }
         }
         Ok(())
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn generate_short_text(
         &self,
         voice: &VoiceState<Q>,
         text: &str,
+        forced_latents: Option<&Tensor<Q::T, Q::B>>,
         frames_after_eos: usize,
         stop: &AtomicBool,
         on_chunk: &mut (dyn FnMut(&[f32]) -> Result<()> + Send),
+        latents_out: Option<&mut Vec<Tensor<Q::T, Q::B>>>,
     ) -> Result<()> {
         let tokens = self.tokenizer.encode(text)?;
         let max_gen_len = self.estimate_max_gen_len(tokens.len());
-        let seq_budget = voice.len() + tokens.len() + max_gen_len;
+        let forced_frames = match forced_latents {
+            Some(latents) => latents.dim(1usize)?,
+            None => 0,
+        };
+        let seq_budget = voice.len() + tokens.len() + forced_frames + max_gen_len;
         let transformer_state = voice.transformer_state.with_seq_budget(seq_budget)?;
         let mut state = TTSState {
             flow_lm_state: FlowLMState {
@@ -421,8 +463,21 @@ impl<Q: CpuBackend> TtsModel<Q> {
 
         let t_generating = Instant::now();
         let start = Instant::now();
-        self.model.prompt_text(&mut state, &tokens)?;
+        match forced_latents {
+            Some(latents) if forced_frames > 0 => {
+                self.model
+                    .prompt_text_and_latents(&mut state, &tokens, latents)?;
+            }
+            _ => self.model.prompt_text(&mut state, &tokens)?,
+        }
         log::info!("Prompting text took {} ms", start.elapsed().as_millis());
+        // With teacher forcing the last forced frame is the input of the first generated step.
+        let first_input = match forced_latents {
+            Some(latents) if forced_frames > 0 => {
+                Some(latents.narrow(1, forced_frames - 1..forced_frames)?.contiguous()?)
+            }
+            _ => None,
+        };
 
         let sample_rate = self.sample_rate();
         let (latent_tx, latent_rx) = std::sync::mpsc::channel::<Option<Tensor<Q::T, Q::B>>>();
@@ -430,10 +485,12 @@ impl<Q: CpuBackend> TtsModel<Q> {
             let decoder = s.spawn(move || self.decode_worker(latent_rx, on_chunk));
             let generated = self.autoregressive_generation(
                 &mut state,
+                first_input,
                 max_gen_len,
                 frames_after_eos,
                 &latent_tx,
                 stop,
+                latents_out,
             );
             // Closes the stream, also on error, so that the decoder finishes.
             let _ = latent_tx.send(None);
@@ -457,12 +514,14 @@ impl<Q: CpuBackend> TtsModel<Q> {
     fn autoregressive_generation(
         &self,
         state: &mut TTSState<Q>,
+        first_input: Option<Tensor<Q::T, Q::B>>,
         max_gen_len: usize,
         frames_after_eos: usize,
         latent_tx: &std::sync::mpsc::Sender<Option<Tensor<Q::T, Q::B>>>,
         stop: &AtomicBool,
+        mut latents_out: Option<&mut Vec<Tensor<Q::T, Q::B>>>,
     ) -> Result<()> {
-        let mut previous: Option<Tensor<Q::T, Q::B>> = None;
+        let mut previous: Option<Tensor<Q::T, Q::B>> = first_input;
         let mut eos_step = None;
         let mut step_times = Vec::new();
         let mut reached_max_len = true;
@@ -486,6 +545,9 @@ impl<Q: CpuBackend> TtsModel<Q> {
             if eos_step.is_some_and(|eos_step| generation_step >= eos_step + frames_after_eos) {
                 reached_max_len = false;
                 break;
+            }
+            if let Some(out) = latents_out.as_deref_mut() {
+                out.push(latent.clone());
             }
             // A closed channel means the decoder stopped on an error, which it reports.
             if latent_tx.send(Some(latent.clone())).is_err() {
@@ -561,6 +623,21 @@ impl<Q: CpuBackend> TtsModel<Q> {
     }
 }
 
+/// How many tokens a chunk may hold. Teacher forced chunks are smaller, as in the Python
+/// package, because their text also carries the previous chunk's.
+fn chunk_token_limit(max_tokens: usize, teacher_force_previous_chunk: bool) -> usize {
+    if teacher_force_previous_chunk {
+        max_tokens.min(defaults::MAX_TOKEN_PER_CHUNK_TEACHER_FORCED)
+    } else {
+        max_tokens
+    }
+}
+
+/// The prompt a teacher forced chunk is prepared from: the previous chunk's text, then this one.
+fn combined_chunk_text(previous: &str, chunk: &str) -> String {
+    format!("{previous} {chunk}")
+}
+
 /// Whether a voice source names a `.safetensors` state rather than audio.
 pub fn is_safetensors_source(source: &str) -> bool {
     let path = if source.starts_with("http://") || source.starts_with("https://") {
@@ -590,5 +667,19 @@ mod tests {
         assert!(is_safetensors_source("hf://a/b/v.safetensors@main"));
         assert!(!is_safetensors_source("hf://a/b/v.wav"));
         assert!(!is_safetensors_source("alba"));
+    }
+
+    #[test]
+    fn teacher_forced_chunks_are_capped_and_continue_the_previous_text() {
+        assert_eq!(chunk_token_limit(50, false), 50);
+        assert_eq!(
+            chunk_token_limit(50, true),
+            defaults::MAX_TOKEN_PER_CHUNK_TEACHER_FORCED
+        );
+        assert_eq!(chunk_token_limit(10, true), 10);
+        assert_eq!(
+            combined_chunk_text("Hello there.", "General Kenobi."),
+            "Hello there. General Kenobi."
+        );
     }
 }

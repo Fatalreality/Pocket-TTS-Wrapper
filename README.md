@@ -79,6 +79,7 @@ The token is stored in `~/.cache/huggingface/token` and reused. Full walkthrough
 | `src/main.rs` | Window setup, Windows glass/acrylic chrome, command registration |
 | `pocketGlass/ui/` | Frontend (`index.html`, `app.js`, `styles.css`), embedded at compile time |
 | `configs/` | Model YAML configs vendored from upstream Pocket TTS, embedded at compile time |
+| `vendor/ptts/` | Inference crate vendored from `xn-ptts`, with teacher-forced chunk continuation added |
 | `docs/` | User guides bundled into the installer, plus the README screenshot |
 | `capabilities/`, `src-tauri/` | Tauri permissions and app icon |
 
@@ -87,7 +88,8 @@ The token is stored in `~/.cache/huggingface/token` and reused. Full walkthrough
 TTS engine and model weights by [Kyutai](https://kyutai.org/) (Pocket TTS); inference through
 [`xn-ptts`](https://github.com/gabrieldemarmiesse/xn-ptts). Voice embeddings come from Kyutai's
 released voice packs and remain subject to their terms. The model configs in `configs/` are
-vendored from the upstream Pocket TTS project.
+vendored from the upstream Pocket TTS project, and `vendor/ptts/` from `xn-ptts` (MIT OR
+Apache-2.0); see `vendor/ptts/VENDORED.md` for the two additions it carries.
 
 This wrapper's own code — the Rust application in `src/` and the frontend in `pocketGlass/ui` — is
 released under the [MIT License](LICENSE), © 2026 Fatalreality. The MIT license covers only that

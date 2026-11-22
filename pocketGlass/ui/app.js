@@ -147,6 +147,7 @@
     steps: document.getElementById("steps"), stepsVal: document.getElementById("steps-val"),
     maxtok: document.getElementById("maxtok"), maxtokVal: document.getElementById("maxtok-val"),
     nc: document.getElementById("nc"), ncVal: document.getElementById("nc-val"),
+    tforce: document.getElementById("tforce"),
     btRecord: document.getElementById("bt-record"),
     recIcon: document.getElementById("rec-icon"),
     recLabel: document.getElementById("rec-label"),
@@ -729,6 +730,8 @@
         eosThreshold: parseFloat(els.eos.value) || undefined,
         max_tokens: parseInt(els.maxtok.value, 10) || undefined,
         maxTokens: parseInt(els.maxtok.value, 10) || undefined,
+        teacher_force_previous_chunk: els.tforce.checked,
+        teacherForcePreviousChunk: els.tforce.checked,
         quantize: q,
       });
       wavBase64 = res.wav_base64;

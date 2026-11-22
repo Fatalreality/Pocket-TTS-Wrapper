@@ -1,0 +1,53 @@
+[package]
+name = "ptts"
+version = "0.4.0-rc.3"
+edition = "2024"
+description = "Phonon text-to-speech inference and serving (vendored, see VENDORED.md)"
+repository = "https://github.com/gradium-ai/xn-ptts"
+keywords = ["tts", "text-to-speech", "speech-synthesis", "voice-cloning", "on-device"]
+categories = ["multimedia::audio"]
+license = "MIT OR Apache-2.0"
+autoexamples = false
+autobins = false
+autotests = false
+
+[features]
+default = []
+# Downloads `hf://` checkpoints from the Hugging Face Hub in `Checkpoint::locate`.
+hub = ["dep:hf-hub"]
+# Installable command; the library stays free of download and CLI dependencies by default.
+cli = ["hf", "audio", "hub", "dep:anyhow", "dep:clap", "dep:tracing-chrome", "dep:libc"]
+cuda = ["xn/cuda", "dep:half"]
+vulkan = ["xn/vulkan"]
+metal = ["xn/metal", "dep:half"]
+webgpu = ["xn/webgpu"]
+accelerate = ["xn/accelerate"]
+# Arm KleidiAI's SME2 kernels for the `q8_0` linears, on CPUs with SME2. A no-op elsewhere.
+kai = ["xn/kai"]
+# Hugging Face `tokenizers` support in `ptts::tok`.
+hf = ["dep:tokenizers"]
+# Decoding and resampling audio files (`ptts::audio`), for voice cloning.
+audio = ["dep:symphonia", "dep:rubato"]
+
+[dependencies]
+anyhow = { version = "1", optional = true }
+clap = { version = "4", features = ["derive"], optional = true }
+hf-hub = { version = "1.0", features = ["blocking"], optional = true }
+tracing-chrome = { version = "0.7.2", optional = true }
+xn = "0.2.11"
+ebur128 = "0.1"
+rand = { version = "0.9.0", default-features = false, features = ["std_rng"] }
+rand_distr = "0.5.0"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1"
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.22", features = ["env-filter"] }
+rubato = { version = "0.15.0", optional = true }
+symphonia = { version = "0.5.3", features = ["all"], optional = true }
+tokenizers = { version = "0.23.1", default-features = false, features = ["fancy-regex"], optional = true }
+safetensors = "0.7.0"
+thiserror = "2"
+half = { version = "2.7.1", features = ["num-traits"], optional = true }
+
+[target.'cfg(unix)'.dependencies]
+libc = { version = "0.2", optional = true }

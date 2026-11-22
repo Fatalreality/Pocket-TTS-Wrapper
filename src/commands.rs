@@ -285,6 +285,8 @@ pub async fn generate(
     framesAfterEos: Option<usize>,
     max_tokens: Option<usize>,
     maxTokens: Option<usize>,
+    teacher_force_previous_chunk: Option<bool>,
+    teacherForcePreviousChunk: Option<bool>,
     quantize: Option<bool>,
     state: State<'_, Arc<AppState>>,
 ) -> Result<GenerateResult, String> {
@@ -293,6 +295,9 @@ pub async fn generate(
     let eos_threshold = eos_threshold.or(eosThreshold);
     let frames_after_eos = frames_after_eos.or(framesAfterEos);
     let max_tokens = max_tokens.or(maxTokens);
+    let teacher_force_previous_chunk = teacher_force_previous_chunk
+        .or(teacherForcePreviousChunk)
+        .unwrap_or(false);
     let state = state.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
         let options = load_options(temperature, noise_clamp, eos_threshold, sampler_decode_steps);
@@ -308,14 +313,30 @@ pub async fn generate(
                 &mut slot, &key, language.as_deref(), config.as_deref(), &options,
             )
             .map_err(|e| e.to_string())?;
-            generate_with_bundle(&bundle.model, &bundle.default_voice, &text, &voice, max_tokens, frames_after_eos)
+            generate_with_bundle(
+                &bundle.model,
+                &bundle.default_voice,
+                &text,
+                &voice,
+                max_tokens,
+                frames_after_eos,
+                teacher_force_previous_chunk,
+            )
         } else {
             let mut slot = state.f32_slot();
             let bundle = ensure_bundle::<F32Backend>(
                 &mut slot, &key, language.as_deref(), config.as_deref(), &options,
             )
             .map_err(|e| e.to_string())?;
-            generate_with_bundle(&bundle.model, &bundle.default_voice, &text, &voice, max_tokens, frames_after_eos)
+            generate_with_bundle(
+                &bundle.model,
+                &bundle.default_voice,
+                &text,
+                &voice,
+                max_tokens,
+                frames_after_eos,
+                teacher_force_previous_chunk,
+            )
         }
     })
     .await
@@ -330,6 +351,7 @@ fn generate_with_bundle<Q: CpuBackend>(
     voice: &Option<String>,
     max_tokens: usize,
     frames_after_eos: Option<usize>,
+    teacher_force_previous_chunk: bool,
 ) -> Result<GenerateResult, String> {
     let sample_rate = model.sample_rate();
     let voice_state = match voice {
@@ -352,6 +374,7 @@ fn generate_with_bundle<Q: CpuBackend>(
                 text,
                 max_tokens,
                 frames_after_eos,
+                teacher_force_previous_chunk,
                 &AtomicBool::new(false),
                 &mut on_chunk,
             )
