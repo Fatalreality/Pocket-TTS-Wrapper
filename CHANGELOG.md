@@ -2,6 +2,19 @@
 
 All notable changes to Pocket TTS (the Windows wrapper) are documented here.
 
+## [0.2.1] - 2026-11-23
+
+### Changed
+- Refreshed `Cargo.lock` to current patch releases. Notable bumps: `tauri`
+  2.12.6 → 2.12.7, `tauri-runtime-wry` 2.12.4 → 2.12.5, `wry` 0.57.2 → 0.57.3,
+  `tao` 0.37.2 → 0.37.3, `tauri-runtime` 2.12.3 → 2.12.4, `tauri-build` and its
+  codegen/macros 2.7.5 → 2.7.6, `xn` 0.2.14 → 0.2.15, plus transitive patch
+  bumps (`serde_with` 3.24.0 → 3.25.0, `regex` 1.13.1 → 1.13.2,
+  `pin-project` 1.1.13 → 1.2.0, `url` 2.5.8 → 2.5.9, `walkdir` 2.5.0 → 2.5.1
+  and others). No API or behaviour changes.
+- Rebuilt the installer and portable executable so the shipped binaries match
+  the refreshed lockfile.
+
 ## [0.2.0] - 2026-11-22
 
 ### Added
