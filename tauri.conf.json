@@ -1,6 +1,6 @@
 {
   "productName": "Pocket TTS",
-  "version": "0.2.1",
+  "version": "1.0.0",
   "identifier": "com.kyutai.pocket-tts",
   "build": {
     "frontendDist": "./pocketGlass/ui",
@@ -29,8 +29,13 @@
   },
   "bundle": {
     "active": true,
-    "targets": ["nsis"],
-    "icon": ["src-tauri/icons/icon.ico"],
+    "createUpdaterArtifacts": true,
+    "targets": [
+      "nsis"
+    ],
+    "icon": [
+      "src-tauri/icons/icon.ico"
+    ],
     "resources": {
       "docs/README.txt": "README.txt",
       "docs/HF_TOKEN_GUIDE.txt": "HF_TOKEN_GUIDE.txt",
@@ -41,6 +46,14 @@
         "installMode": "currentUser",
         "installerIcon": "src-tauri/icons/icon.ico"
       }
+    }
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDBCOEY2NkFCMjdDQzBCNkIKUldSckM4d25xMmFQQ3ptVms3MWRnTGZVNkhNL3A5a0t0QVdHeDc1VG9zZEVCY3FDNUc2MjZ2a3cK",
+      "endpoints": [
+        "https://github.com/Fatalreality/Pocket-TTS-Wrapper/releases/latest/download/latest.json"
+      ]
     }
   }
 }

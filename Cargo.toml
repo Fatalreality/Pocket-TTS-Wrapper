@@ -1,6 +1,6 @@
 [package]
 name = "pocket-tts-app"
-version = "0.2.1"
+version = "1.0.0"
 edition = "2021"
 description = "Kyutai Pocket TTS desktop application with Liquid Glass UI"
 
@@ -11,6 +11,7 @@ path = "src/main.rs"
 [dependencies]
 tauri = { version = "2", default-features = false, features = ["wry", "compression", "common-controls-v6"] }
 tauri-plugin-dialog = "2"
+tauri-plugin-updater = "2"
 anyhow = "1"
 log = "0.4"
 serde = { version = "1", features = ["derive"] }
@@ -21,6 +22,8 @@ base64 = "0.22"
 
 # TTS engine dependencies (same as repo/rust/)
 ptts = { path = "vendor/ptts", default-features = false, features = ["hf", "audio"] }
+mp3lame-encoder = "0.3"
+vorbis_rs = "0.5"
 xn = "0.2.11"
 half = "2"
 hf-hub = { version = "1.0", features = ["blocking"] }

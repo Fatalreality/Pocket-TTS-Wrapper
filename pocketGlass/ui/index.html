@@ -74,6 +74,15 @@
         >
           <span class="theme-opt" aria-hidden="true">✨</span>
         </button>
+        <button
+          type="button"
+          class="theme-pill"
+          id="bt-update"
+          title="Check for updates"
+          aria-label="Check for updates"
+        >
+          <span class="theme-opt" aria-hidden="true">⤓</span>
+        </button>
       </div>
     </header>
 
@@ -99,6 +108,14 @@
               <div class="dot"></div><div class="dot"></div><div class="dot"></div>
             </div>
             <div class="status" id="gen-status"></div>
+            <button
+              type="button"
+              class="btn glass-pill render-file-btn"
+              id="bt-render-file"
+              title="Render a whole .txt file to a WAV, MP3 or Ogg file"
+            >
+              Render a text file…
+            </button>
           </section>
 
           <section class="card play-card">
@@ -128,7 +145,7 @@
             </div>
 
             <div class="playerinfo-bar" id="playerinfo">
-              <button type="button" class="save-link" id="bt-save">Save WAV</button>
+              <button type="button" class="save-link" id="bt-save" title="Save as WAV, MP3 or Ogg">Save audio</button>
               <span class="readout">
                 <span class="readout-lbl">Duration</span>
                 <span class="readout-val" id="dur-val">–</span>
@@ -320,6 +337,7 @@
         </div>
         <div class="terminal-preview" id="terminal-preview">Pocket TTS engine ready.</div>
         <div class="terminal-actions">
+          <button type="button" class="term-btn" id="bt-term-save" title="Save the log to a file">Save</button>
           <button type="button" class="term-btn" id="bt-term-copy" title="Copy logs to clipboard">Copy</button>
           <button type="button" class="term-btn" id="bt-term-clear" title="Clear terminal">Clear</button>
           <button type="button" class="term-btn term-toggle" id="bt-term-toggle" title="Expand or collapse console">▲ Expand</button>

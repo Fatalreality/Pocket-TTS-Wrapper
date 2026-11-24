@@ -11,6 +11,7 @@ mod commands;
 mod config;
 mod defaults;
 mod download;
+mod encode;
 mod logging;
 mod model;
 mod rng;
@@ -20,8 +21,9 @@ mod tokenizer;
 mod weights;
 
 use commands::{
-    app_info, clear_terminal_logs, export_voice, generate, get_hf_status, get_languages,
-    get_terminal_logs, get_voices, load_model, save_audio, set_hf_token,
+    app_info, check_update, clear_terminal_logs, export_voice, generate, get_hf_status,
+    get_languages, get_terminal_logs, get_voices, install_update, load_model, render_text_file,
+    save_audio, save_logs, set_hf_token,
 };
 use logging::init as logging_init;
 use state::AppState;
@@ -249,6 +251,7 @@ fn main() {
     }
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(Arc::new(AppState::default()))
         .invoke_handler(tauri::generate_handler![
             load_model,
@@ -262,6 +265,10 @@ fn main() {
             set_hf_token,
             get_terminal_logs,
             clear_terminal_logs,
+            save_logs,
+            render_text_file,
+            check_update,
+            install_update,
             set_window_style,
         ])
         .setup(|app| {

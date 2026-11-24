@@ -2,6 +2,29 @@
 
 All notable changes to Pocket TTS (the Windows wrapper) are documented here.
 
+## [1.0.0] - 2026-11-24
+
+The first non-0.x release: everything below lands together with self-updating, compressed
+export and long-form rendering, so the desktop app is feature-complete for everyday use.
+
+### Added
+- **In-app updates**: the header's download button checks the published release and installs a
+  signed update, restarting into it (`tauri-plugin-updater`).
+- **MP3 and Ogg Vorbis export** beside WAV, chosen by the file name in the save dialog; LAME and
+  libvorbis do the encoding, so a saved clip is a fraction of the WAV's size.
+- **Long-form rendering**: "Render a text file…" turns a whole `.txt` into one WAV, MP3 or Ogg
+  file, streaming to disk with a progress readout per rendered second.
+- **Save log** in the console drawer, writing the transcript with a header naming the build,
+  platform and CPU thread count for bug reports.
+- `SHA256SUMS.txt` and the updater's `latest.json` on every release.
+
+### Changed
+- Releases are built and published by `.github/workflows/release.yml` on a `v*` tag, instead of
+  by hand; `scripts/release.mjs` owns the version bump, the notes and the asset names, and
+  [`RELEASING.md`](RELEASING.md) documents the process.
+- `save_audio` picks its codec from the target extension and rejects unknown ones instead of
+  writing WAV bytes under any name.
+
 ## [0.2.1] - 2026-11-23
 
 ### Changed

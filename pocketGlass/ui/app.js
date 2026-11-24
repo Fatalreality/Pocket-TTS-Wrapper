@@ -177,7 +177,10 @@
     terminalPreview: document.getElementById("terminal-preview"),
     btTermCopy: document.getElementById("bt-term-copy"),
     btTermClear: document.getElementById("bt-term-clear"),
+    btTermSave: document.getElementById("bt-term-save"),
     btTermToggle: document.getElementById("bt-term-toggle"),
+    btUpdate: document.getElementById("bt-update"),
+    btRenderFile: document.getElementById("bt-render-file"),
   };
 
   // ---------- state ----------
@@ -476,9 +479,18 @@
     if (cmd === "app_info") {
       return {
         name: "Pocket TTS",
-        version: "0.1.0",
+        version: "preview (no backend)",
         description: "Kyutai Pocket TTS desktop application with Liquid Glass UI",
       };
+    }
+    if (cmd === "check_update") {
+      return { available: false, current_version: "preview", version: null, notes: null };
+    }
+    if (cmd === "save_logs") {
+      return args.file_path || args.filePath || "pocket-tts-log.txt";
+    }
+    if (cmd === "render_text_file") {
+      throw new Error("Rendering a text file needs the desktop app");
     }
     if (cmd === "load_model") {
       return "Model ready (browser preview)";
@@ -785,7 +797,14 @@
   }
 
   // ---------- save audio ----------
-  async function saveWav() {
+  // The backend picks the codec from the chosen extension, so the dialog is the format menu.
+  const AUDIO_FILTERS = [
+    { name: "WAV Audio", extensions: ["wav"] },
+    { name: "MP3 Audio", extensions: ["mp3"] },
+    { name: "Ogg Vorbis", extensions: ["ogg"] },
+  ];
+
+  async function saveAudio() {
     if (!wavBase64) {
       toast("No audio to save");
       return;
@@ -813,12 +832,13 @@
     try {
       path = await saveDialog({
         defaultPath: "pocket-tts-output.wav",
-        filters: [{ name: "WAV Audio", extensions: ["wav"] }],
+        filters: AUDIO_FILTERS,
       });
     } catch (e) {
       return;
     }
     if (!path) return;
+    if (!/\.(wav|mp3|ogg)$/i.test(path)) path += ".wav";
     try {
       const saved = await api("save_audio", {
         wav_base64: wavBase64,
@@ -827,10 +847,120 @@
         filePath: path,
       });
       toast("Saved to " + saved);
-      addClientLog("INFO", `Saved generated WAV to ${saved}`);
+      addClientLog("INFO", `Saved generated audio to ${saved}`);
     } catch (e) {
       toast("Save failed: " + (e.message || e));
       addClientLog("ERROR", `Save failed: ${e.message || e}`);
+    }
+  }
+
+  // ---------- long form: render a whole text file ----------
+  async function renderTextFile() {
+    const input = await pickOpen([
+      { name: "Text files (*.txt, *.md)", extensions: ["txt", "md"] },
+    ]);
+    if (!input) return;
+    const stem = input.split(/[\\/]/).pop().replace(/\.[^.]+$/, "") || "text";
+    let output = await pickSave(AUDIO_FILTERS, `pocket-tts-${stem}.wav`);
+    if (!output) return;
+    if (!/\.(wav|mp3|ogg)$/i.test(output)) output += ".wav";
+
+    const ncValue = els.nc.dataset.unset === "true" ? undefined : parseFloat(els.nc.value);
+    const activeVoice = recordedPath || selectedVoice || selectedVoiceName || undefined;
+    setEnabled(els.btGenerate, false);
+    if (els.btRenderFile) setEnabled(els.btRenderFile, false);
+    els.genSpinner.style.display = "flex";
+    els.genStatus.textContent = "Rendering text file…";
+    addClientLog("INFO", `Rendering ${input} to ${output}`);
+
+    try {
+      const res = await api("render_text_file", {
+        input_path: input,
+        inputPath: input,
+        output_path: output,
+        outputPath: output,
+        language: els.language.value,
+        config: null,
+        voice: activeVoice,
+        sampler_decode_steps: parseInt(els.steps.value, 10) || undefined,
+        samplerDecodeSteps: parseInt(els.steps.value, 10) || undefined,
+        temperature: parseFloat(els.temp.value) || undefined,
+        noise_clamp: ncValue,
+        noiseClamp: ncValue,
+        eos_threshold: parseFloat(els.eos.value) || undefined,
+        eosThreshold: parseFloat(els.eos.value) || undefined,
+        max_tokens: parseInt(els.maxtok.value, 10) || undefined,
+        maxTokens: parseInt(els.maxtok.value, 10) || undefined,
+        teacher_force_previous_chunk: els.tforce.checked,
+        teacherForcePreviousChunk: els.tforce.checked,
+        quantize: els.quantize.checked,
+      });
+      els.genStatus.textContent = `Saved ${fmtMs(res.duration_ms)} to ${res.output_path}`;
+      setChipOutput(`Audio ${fmtMs(res.duration_ms)}`);
+      toast("Rendered to " + res.output_path, 7000);
+      addClientLog("TTS", `Rendered ${res.num_samples} samples to ${res.output_path} (${res.format})`);
+    } catch (e) {
+      const errStr = String(e.message || e);
+      els.genStatus.textContent = "Error: " + errStr;
+      toast("Render failed: " + errStr, 6000);
+      addClientLog("ERROR", `Render failed: ${errStr}`);
+    } finally {
+      els.genSpinner.style.display = "none";
+      setEnabled(els.btGenerate, true);
+      if (els.btRenderFile) setEnabled(els.btRenderFile, true);
+    }
+  }
+
+  // ---------- updates ----------
+  async function checkForUpdates() {
+    try {
+      const info = await api("check_update");
+      if (!info || !info.available) {
+        toast(`Pocket TTS ${info?.current_version || ""} is up to date`);
+        addClientLog("INFO", "No update available.");
+        return;
+      }
+      const notes = (info.notes || "").split("\n").slice(0, 8).join("\n");
+      const proceed = window.confirm(
+        `Pocket TTS ${info.version} is available (you have ${info.current_version}).\n\n` +
+          (notes ? notes + "\n\n" : "") +
+          "Download and install it now? The app will restart."
+      );
+      if (!proceed) return;
+      els.genStatus.textContent = `Downloading ${info.version}…`;
+      addClientLog("INFO", `Installing update ${info.version}`);
+      await api("install_update");
+    } catch (e) {
+      const errStr = String(e.message || e);
+      toast("Update failed: " + errStr, 6000);
+      addClientLog("ERROR", `Update failed: ${errStr}`);
+    }
+  }
+
+  // ---------- save the log ----------
+  async function saveLogs() {
+    const text = terminalLogs
+      .map(l => `[${l.timestamp}] [${l.level}] ${l.message}`)
+      .join("\n");
+    const stamp = new Date()
+      .toISOString()
+      .replace(/[-:]/g, "")
+      .replace(/\..*$/, "")
+      .replace("T", "-");
+    const path = await pickSave(
+      [{ name: "Text file", extensions: ["txt"] }, { name: "Log file", extensions: ["log"] }],
+      `pocket-tts-log-${stamp}.txt`
+    );
+    if (!path) return;
+    try {
+      const saved = await api("save_logs", {
+        content: text || "No log entries.",
+        file_path: path,
+        filePath: path,
+      });
+      toast("Log saved to " + saved);
+    } catch (e) {
+      toast("Could not save the log: " + (e.message || e));
     }
   }
 
@@ -1119,7 +1249,9 @@
   els.language.onchange = onLanguageChange;
   els.btLoad.onclick = loadModel;
   els.btGenerate.onclick = generate;
-  els.btSave.onclick = saveWav;
+  els.btSave.onclick = saveAudio;
+  if (els.btRenderFile) els.btRenderFile.onclick = renderTextFile;
+  if (els.btUpdate) els.btUpdate.onclick = checkForUpdates;
   els.btRecord.onclick = toggleRecord;
 
   // Clone actions: import audio file, import safetensors, record, export, and Hugging Face auth
@@ -1204,6 +1336,7 @@
   if (els.btTermToggle) els.btTermToggle.onclick = toggleTerminal;
   if (els.btTermCopy) els.btTermCopy.onclick = copyTerminalLogs;
   if (els.btTermClear) els.btTermClear.onclick = clearTerminal;
+  if (els.btTermSave) els.btTermSave.onclick = saveLogs;
 
   els.btTheme.onclick = toggleLightDark;
   els.btThemeVariant.onclick = cycleThemeVariant;
@@ -1308,6 +1441,12 @@
     if (hasTauri && window.__TAURI__ && window.__TAURI__.event) {
       window.__TAURI__.event.listen("terminal_log", e => {
         if (e.payload) appendTerminalLine(e.payload);
+      });
+      window.__TAURI__.event.listen("render_progress", e => {
+        const seconds = e.payload && e.payload.seconds;
+        if (typeof seconds === "number") {
+          els.genStatus.textContent = `Rendering… ${Math.round(seconds)}s of audio so far`;
+        }
       });
     }
 

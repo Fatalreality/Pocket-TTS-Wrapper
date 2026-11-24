@@ -1,0 +1,47 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  release:
+    name: build and publish
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: release
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      # The updater signature is what the shipped app verifies, so the private key must come
+      # from the repository secrets; without it the bundles have no .sig and no updates.
+      - name: Build installer and portable binary
+        run: npx --yes @tauri-apps/cli@2 build
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+
+      # Renames the bundles to the hyphenated names the README links to, writes
+      # SHA256SUMS.txt and the updater's latest.json.
+      - name: Stage release assets
+        run: node scripts/release.mjs stage github-release
+
+      - name: Publish GitHub release
+        run: node scripts/release.mjs publish github-release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
