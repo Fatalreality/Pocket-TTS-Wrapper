@@ -156,8 +156,9 @@ function token() {
   return fail("no GITHUB_TOKEN and no cached git credentials for github.com");
 }
 
-async function api(path, init = {}) {
-  const res = await fetch(`https://api.github.com${path}`, {
+// Release asset uploads live on their own host; api.github.com answers 404 for them.
+async function api(path, init = {}, base = "https://api.github.com") {
+  const res = await fetch(`${base}${path}`, {
     ...init,
     headers: {
       Authorization: `Bearer ${token()}`,
@@ -217,7 +218,8 @@ async function publish(dir = "github-release") {
         method: "POST",
         headers: { "Content-Type": "application/octet-stream" },
         body: bytes,
-      }
+      },
+      "https://uploads.github.com"
     );
     console.log(`  uploaded ${name} (${asset.size} bytes)`);
   };
