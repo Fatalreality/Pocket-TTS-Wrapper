@@ -313,7 +313,14 @@
   // ---------- unfinished renders ----------
   function readResumeJob() {
     try {
-      return JSON.parse(localStorage.getItem(RESUME_KEY) || "null");
+      const raw = JSON.parse(localStorage.getItem(RESUME_KEY) || "null");
+      if (!raw || typeof raw !== "object") return null;
+      if (typeof raw.input !== "string" || typeof raw.output !== "string") return null;
+      return {
+        input: raw.input,
+        output: raw.output,
+        at: typeof raw.at === "number" ? raw.at : Date.now(),
+      };
     } catch {
       return null;
     }
@@ -321,8 +328,16 @@
 
   function writeResumeJob(job) {
     try {
-      if (job) localStorage.setItem(RESUME_KEY, JSON.stringify(job));
-      else localStorage.removeItem(RESUME_KEY);
+      if (job) {
+        const stored = {
+          input: String(job.input || ""),
+          output: String(job.output || ""),
+          at: typeof job.at === "number" ? job.at : Date.now(),
+        };
+        localStorage.setItem(RESUME_KEY, JSON.stringify(stored));
+      } else {
+        localStorage.removeItem(RESUME_KEY);
+      }
     } catch {}
     if (els.btResumeRender) els.btResumeRender.hidden = !job;
   }
