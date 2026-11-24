@@ -372,6 +372,11 @@ impl<Q: CpuBackend> TtsModel<Q> {
     /// Port of `generate_audio_stream`: splits the text into chunks and generates them one after
     /// the other from the voice state, calling `on_chunk` with the audio as it is decoded.
     /// Setting `stop` ends the generation early.
+    ///
+    /// `skip_chunks` starts after the first chunks, which is how an interrupted long render picks
+    /// up where it left off, and `on_chunk_done` reports the index of every finished chunk so the
+    /// caller can checkpoint the render.
+    #[allow(clippy::too_many_arguments)]
     pub fn generate_audio_stream(
         &self,
         voice: &VoiceState<Q>,
@@ -379,8 +384,10 @@ impl<Q: CpuBackend> TtsModel<Q> {
         max_tokens: usize,
         frames_after_eos: Option<usize>,
         teacher_force_previous_chunk: bool,
+        skip_chunks: usize,
         stop: &AtomicBool,
         on_chunk: &mut (dyn FnMut(&[f32]) -> Result<()> + Send),
+        mut on_chunk_done: Option<&mut (dyn FnMut(usize) -> Result<()> + Send)>,
     ) -> Result<()> {
         let frames_after_eos = frames_after_eos.or(self.config.model_recommended_frames_after_eos);
         // This is a very simplistic way of handling long texts, as in the Python package.
@@ -393,7 +400,10 @@ impl<Q: CpuBackend> TtsModel<Q> {
         // Without teacher forcing every chunk starts afresh from the voice prompt; with it each
         // chunk continues the previous one, from the latents it generated.
         let mut continuation: Option<(String, Vec<Tensor<Q::T, Q::B>>)> = None;
-        for chunk in chunks {
+        for (index, chunk) in chunks.iter().enumerate() {
+            if index < skip_chunks {
+                continue;
+            }
             if stop.load(Ordering::Relaxed) {
                 break;
             }
@@ -429,7 +439,10 @@ impl<Q: CpuBackend> TtsModel<Q> {
                 latents_out,
             )?;
             if teacher_force_previous_chunk && !latents.is_empty() {
-                continuation = Some((chunk, latents));
+                continuation = Some((chunk.clone(), latents));
+            }
+            if let Some(done) = on_chunk_done.as_deref_mut() {
+                done(index)?;
             }
         }
         Ok(())

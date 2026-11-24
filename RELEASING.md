@@ -61,6 +61,13 @@ GITHUB_TOKEN=... node scripts/release.mjs publish github-release
 the same name, and sets the notes from the changelog. It uses `GITHUB_TOKEN` or, locally, the
 credentials `git credential fill` returns for github.com.
 
+## Staying in step with upstream
+
+The `Upstream check` workflow runs weekly: it compares the vendored `configs/` with
+`kyutai-labs/pocket-tts` and the `vendor/ptts` revision with `xn-ptts`, then opens or updates a
+single "Upstream Pocket TTS moved" issue while there is drift. Run it by hand from the Actions
+tab, or locally with `node scripts/check-upstream.mjs`.
+
 ## Verifying a release
 
 - `gh release view v<version>` (or the API) shows every asset as `uploaded`.

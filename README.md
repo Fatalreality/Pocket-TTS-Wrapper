@@ -21,6 +21,13 @@ Made as a side project because a UI is nicer than a command line.
 - Playback with waveform, seek, duration/rate readout, and export to WAV, MP3 or Ogg Vorbis.
 - **Long-form rendering**: point it at a `.txt` and it renders the whole file to one audio file,
   streaming to disk with progress instead of holding an hour of speech in memory.
+- **Stop and resume**: a running job can be stopped at any chunk, and an interrupted long render
+  checkpoints every sentence so "Resume unfinished render" appends the rest to the same file, even
+  after a restart.
+- **Voice previews and recent clips**: picking a built-in voice plays a cached one-line sample, and
+  every generation this session is listed with its voice and length for instant replay.
+- **Speak from anywhere**: `Ctrl`+`Alt`+`S` (or the tray icon) reads the clipboard and speaks it,
+  so text from another application never has to be pasted into the app by hand.
 - **Updates from inside the app** — the header's download button checks the latest release, and a
   signed update installs and restarts on its own.
 
@@ -33,7 +40,7 @@ Made as a side project because a UI is nicer than a command line.
 
 ## Install
 
-Download `Pocket-TTS-1.0.1-x64-setup.exe` from
+Download `Pocket-TTS-1.1.0-x64-setup.exe` from
 [Releases](https://github.com/Fatalreality/Pocket-TTS-Wrapper/releases), run it, and launch
 **Pocket TTS** from the Start menu.
 
@@ -78,6 +85,7 @@ The token is stored in `~/.cache/huggingface/token` and reused. Full walkthrough
 | --- | --- |
 | `Ctrl` + `Enter` | Generate speech |
 | `Space` | Play / pause |
+| `Ctrl` + `Alt` + `S` | Speak the clipboard text (global) |
 
 ## Repository layout
 
@@ -91,6 +99,7 @@ The token is stored in `~/.cache/huggingface/token` and reused. Full walkthrough
 | `vendor/ptts/` | Inference crate vendored from `xn-ptts`, with teacher-forced chunk continuation added |
 | `docs/` | User guides bundled into the installer, plus the README screenshot |
 | `scripts/release.mjs` | Version bump, changelog notes, asset staging and publishing |
+| `scripts/check-upstream.mjs` | Compares `configs/` and `vendor/ptts` with upstream; run weekly by `.github/workflows/upstream.yml` |
 | `capabilities/`, `src-tauri/` | Tauri permissions and app icon |
 
 ## Credits & license

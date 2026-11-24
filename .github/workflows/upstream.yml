@@ -1,0 +1,42 @@
+name: Upstream check
+
+# Weekly, and on demand: does kyutai-labs/pocket-tts (or the vendored xn-ptts crate) differ from
+# what this repository carries? A single issue is kept open and updated while there is drift.
+on:
+  schedule:
+    - cron: "0 6 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  upstream:
+    name: compare with upstream
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Compare configs and the vendored crate
+        id: check
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: node scripts/check-upstream.mjs --out upstream-report.md
+
+      - name: Open or update the tracking issue
+        if: steps.check.outputs.drift == 'yes'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          title="Upstream Pocket TTS moved"
+          number=$(gh issue list --state open --search "$title in:title" --json number --jq '.[0].number')
+          if [ -z "$number" ]; then
+            gh issue create --title "$title" --body-file upstream-report.md
+          else
+            gh issue comment "$number" --body-file upstream-report.md
+          fi

@@ -8,9 +8,10 @@ use crate::encode::{AudioSink, Codec, pcm_to_wav};
 use crate::model::{CpuBackend, LoadOptions};
 use crate::state::{AppState, F32Backend, Q8Backend, ensure_bundle};
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
-use serde::Serialize;
-use std::path::Path;
-use std::sync::atomic::AtomicBool;
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use tauri::{AppHandle, Emitter, State};
 
@@ -54,6 +55,8 @@ pub struct GenerateResult {
     pub duration_ms: f64,
     pub num_samples: usize,
     pub wav_base64: String,
+    /// True when the Stop button ended the generation early; the audio is what was finished.
+    pub cancelled: bool,
 }
 
 /// Whether a newer release is published, for the update button.
@@ -72,6 +75,54 @@ pub struct RenderResult {
     pub duration_ms: f64,
     pub num_samples: usize,
     pub format: String,
+    /// True when the Stop button ended the render; the file holds what was finished and the
+    /// checkpoint next to it can resume the rest.
+    pub cancelled: bool,
+}
+
+/// Progress of a render, kept next to the output so an interrupted file can be finished later.
+const CHECKPOINT_VERSION: u32 = 1;
+
+#[derive(Serialize, Deserialize)]
+struct RenderCheckpoint {
+    version: u32,
+    fingerprint: String,
+    sample_rate: u32,
+    done_chunks: usize,
+    samples: u64,
+}
+
+/// `output`'s name with `suffix` appended, next to the output itself.
+fn sidecar_path(output: &Path, suffix: &str) -> PathBuf {
+    let name = output
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_else(|| "render".to_string());
+    output.with_file_name(format!("{name}.{suffix}"))
+}
+
+/// Identifies the text, voice and settings a render was started with, so a checkpoint from a
+/// different job is never resumed by mistake.
+fn render_fingerprint(
+    text: &str,
+    voice: &Option<String>,
+    key: &str,
+    max_tokens: usize,
+    frames_after_eos: Option<usize>,
+    teacher_force_previous_chunk: bool,
+) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(text.as_bytes());
+    hasher.update([0]);
+    hasher.update(voice.as_deref().unwrap_or("").as_bytes());
+    hasher.update([0]);
+    hasher.update(key.as_bytes());
+    hasher.update([0]);
+    hasher.update(max_tokens.to_le_bytes());
+    hasher.update([0]);
+    hasher.update(frames_after_eos.unwrap_or(usize::MAX).to_le_bytes());
+    hasher.update([teacher_force_previous_chunk as u8]);
+    format!("{:x}", hasher.finalize())
 }
 
 /// Progress of a text-file render, emitted once per rendered second of audio.
@@ -325,6 +376,7 @@ pub async fn generate(
     let teacher_force_previous_chunk = teacher_force_previous_chunk
         .or(teacherForcePreviousChunk)
         .unwrap_or(false);
+    state.inner().begin_generation();
     let state = state.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
         let options = load_options(temperature, noise_clamp, eos_threshold, sampler_decode_steps);
@@ -348,6 +400,7 @@ pub async fn generate(
                 max_tokens,
                 frames_after_eos,
                 teacher_force_previous_chunk,
+                state.stop_flag(),
             )
         } else {
             let mut slot = state.f32_slot();
@@ -363,6 +416,7 @@ pub async fn generate(
                 max_tokens,
                 frames_after_eos,
                 teacher_force_previous_chunk,
+                state.stop_flag(),
             )
         }
     })
@@ -371,6 +425,7 @@ pub async fn generate(
 }
 
 /// Generates from a loaded model, resolving the voice and collecting the audio as WAV.
+#[allow(clippy::too_many_arguments)]
 fn generate_with_bundle<Q: CpuBackend>(
     model: &Arc<crate::model::TtsModel<Q>>,
     default_voice: &Arc<crate::model::VoiceState<Q>>,
@@ -379,6 +434,7 @@ fn generate_with_bundle<Q: CpuBackend>(
     max_tokens: usize,
     frames_after_eos: Option<usize>,
     teacher_force_previous_chunk: bool,
+    stop: &AtomicBool,
 ) -> Result<GenerateResult, String> {
     let sample_rate = model.sample_rate();
     let voice_state = resolve_voice(model, default_voice, voice)?;
@@ -395,8 +451,10 @@ fn generate_with_bundle<Q: CpuBackend>(
                 max_tokens,
                 frames_after_eos,
                 teacher_force_previous_chunk,
-                &AtomicBool::new(false),
+                0,
+                stop,
                 &mut on_chunk,
+                None,
             )
             .map_err(|e| e.to_string())?;
     }
@@ -407,7 +465,20 @@ fn generate_with_bundle<Q: CpuBackend>(
         duration_ms: (pcm.len() as f64 / sample_rate as f64) * 1000.0,
         num_samples: pcm.len(),
         wav_base64,
+        cancelled: stop.load(Ordering::SeqCst),
     })
+}
+
+/// Stops the generation or text-file render that is running, at its next chunk boundary.
+/// The audio finished so far is kept: a cancelled render leaves a checkpoint to resume from.
+#[tauri::command]
+pub fn cancel_generation(state: State<'_, Arc<AppState>>) -> Result<(), String> {
+    state.request_cancel();
+    crate::logging::add_log_entry(
+        "INFO",
+        "Stop requested; finishing the current chunk.",
+    );
+    Ok(())
 }
 
 /// Validates that byte buffer contains standard RIFF/WAVE audio data.
@@ -684,6 +755,8 @@ pub async fn render_text_file(
     teacher_force_previous_chunk: Option<bool>,
     teacherForcePreviousChunk: Option<bool>,
     quantize: Option<bool>,
+    // Continue an interrupted render of the same text and settings instead of starting over.
+    resume: Option<bool>,
     state: State<'_, Arc<AppState>>,
 ) -> Result<RenderResult, String> {
     let input = input_path
@@ -700,6 +773,8 @@ pub async fn render_text_file(
     let teacher_force_previous_chunk = teacher_force_previous_chunk
         .or(teacherForcePreviousChunk)
         .unwrap_or(false);
+    let resume = resume.unwrap_or(false);
+    state.inner().begin_generation();
     let state = state.inner().clone();
 
     tauri::async_runtime::spawn_blocking(move || {
@@ -714,8 +789,16 @@ pub async fn render_text_file(
         let quantize = quantize.unwrap_or(false);
         let key = cache_key(language.as_deref(), config.as_deref(), &options, quantize);
         let max_tokens = max_tokens.unwrap_or(crate::defaults::MAX_TOKEN_PER_CHUNK);
+        let fingerprint = render_fingerprint(
+            text,
+            &voice,
+            &key,
+            max_tokens,
+            frames_after_eos,
+            teacher_force_previous_chunk,
+        );
 
-        let (samples, sample_rate) = if quantize {
+        let (samples, sample_rate, cancelled) = if quantize {
             let mut slot = state.q8_slot();
             let bundle = ensure_bundle::<Q8Backend>(
                 &mut slot, &key, language.as_deref(), config.as_deref(), &options,
@@ -732,6 +815,9 @@ pub async fn render_text_file(
                 max_tokens,
                 frames_after_eos,
                 teacher_force_previous_chunk,
+                resume,
+                &fingerprint,
+                state.stop_flag(),
             )?
         } else {
             let mut slot = state.f32_slot();
@@ -750,6 +836,9 @@ pub async fn render_text_file(
                 max_tokens,
                 frames_after_eos,
                 teacher_force_previous_chunk,
+                resume,
+                &fingerprint,
+                state.stop_flag(),
             )?
         };
 
@@ -757,7 +846,8 @@ pub async fn render_text_file(
         crate::logging::add_log_entry(
             "INFO",
             &format!(
-                "Rendered {input} to {output} ({:.1}s, {})",
+                "{} {input} to {output} ({:.1}s, {})",
+                if cancelled { "Stopped rendering" } else { "Rendered" },
                 duration_ms / 1000.0,
                 codec.name()
             ),
@@ -767,6 +857,7 @@ pub async fn render_text_file(
             duration_ms,
             num_samples: samples,
             format: codec.name().to_string(),
+            cancelled,
         })
     })
     .await
@@ -787,16 +878,76 @@ fn render_to_file<Q: CpuBackend>(
     max_tokens: usize,
     frames_after_eos: Option<usize>,
     teacher_force_previous_chunk: bool,
-) -> Result<(usize, usize), String> {
+    resume: bool,
+    fingerprint: &str,
+    stop: &AtomicBool,
+) -> Result<(usize, usize, bool), String> {
     let sample_rate = model.sample_rate();
     let voice_state = resolve_voice(model, default_voice, voice)?;
     let path = output.to_path_buf();
     let rate = sample_rate as u32;
+    let meta_path = sidecar_path(output, "resume.json");
+    let part_path = sidecar_path(output, "resume.pcm");
+
+    // How much of the text an earlier attempt already rendered, if this resumes it. The raw
+    // samples are kept beside the output so any codec can be resumed, not just WAV.
+    let (skip_chunks, already) = if resume && meta_path.exists() && part_path.exists() {
+        let meta: RenderCheckpoint = serde_json::from_str(
+            &std::fs::read_to_string(&meta_path)
+                .map_err(|e| format!("cannot read {}: {e}", meta_path.display()))?,
+        )
+        .map_err(|e| format!("{} is not a render checkpoint: {e}", meta_path.display()))?;
+        if meta.version != CHECKPOINT_VERSION {
+            return Err("the saved progress was written by another version of Pocket TTS".into());
+        }
+        if meta.fingerprint != fingerprint {
+            return Err(
+                "the saved progress belongs to different text, voice or settings".into(),
+            );
+        }
+        if meta.sample_rate != rate {
+            return Err("the saved progress has a different sample rate".into());
+        }
+        let bytes = std::fs::metadata(&part_path)
+            .map(|m| m.len() as usize)
+            .unwrap_or(0);
+        (meta.done_chunks, (bytes / 2).min(meta.samples as usize))
+    } else {
+        (0, 0)
+    };
+
+    // A fresh render starts its own partial-audio file; a resume keeps appending to the old one.
+    if already == 0 {
+        let _ = std::fs::remove_file(&meta_path);
+        std::fs::File::create(&part_path)
+            .map_err(|e| format!("cannot create {}: {e}", part_path.display()))?;
+    }
+
     let (tx, rx) = std::sync::mpsc::sync_channel::<Vec<f32>>(8);
+    let replay_path = part_path.clone();
 
     let writer = std::thread::spawn(move || -> anyhow::Result<usize> {
         let mut sink = AudioSink::create(codec, &path, rate)?;
         let mut total = 0usize;
+        // Audio from the earlier attempt goes into the new file first, straight from the part
+        // file, so the finished render is one continuous stream.
+        if already > 0 {
+            use std::io::Read;
+            let mut file = std::fs::File::open(&replay_path)?;
+            let mut remaining = already * 2;
+            let mut buffer = vec![0u8; 128 * 1024];
+            while remaining > 0 {
+                let want = remaining.min(buffer.len());
+                let read = file.read(&mut buffer[..want])?;
+                if read == 0 {
+                    break;
+                }
+                let block = crate::encode::pcm16_to_pcm(&buffer[..read]);
+                sink.write(&block)?;
+                total += block.len();
+                remaining -= read;
+            }
+        }
         for block in rx {
             sink.write(&block)?;
             total += block.len();
@@ -806,9 +957,16 @@ fn render_to_file<Q: CpuBackend>(
     });
 
     let generation = (|| -> Result<(), String> {
-        let mut sent = 0usize;
-        let mut next_report = sample_rate;
+        use std::io::Write;
+        let mut part = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&part_path)
+            .map_err(|e| format!("cannot open {}: {e}", part_path.display()))?;
+        let mut sent = already;
+        let mut next_report = (already / sample_rate + 1) * sample_rate;
         let mut on_chunk = move |chunk: &[f32]| -> anyhow::Result<()> {
+            part.write_all(&crate::encode::pcm_to_pcm16(chunk))?;
             sent += chunk.len();
             if sent >= next_report {
                 next_report += sample_rate;
@@ -829,6 +987,27 @@ fn render_to_file<Q: CpuBackend>(
                 .map_err(|_| anyhow::anyhow!("the audio writer stopped"))?;
             Ok(())
         };
+        // After every finished chunk the checkpoint records how far the render got, so an
+        // interruption (Stop, a crash, a full disk) can continue from that chunk.
+        let chunk_meta = meta_path.clone();
+        let chunk_part = part_path.clone();
+        let chunk_fingerprint = fingerprint.to_string();
+        let mut on_chunk_done = move |index: usize| -> anyhow::Result<()> {
+            let samples = std::fs::metadata(&chunk_part)
+                .map(|m| m.len() / 2)
+                .unwrap_or(0);
+            let checkpoint = RenderCheckpoint {
+                version: CHECKPOINT_VERSION,
+                fingerprint: chunk_fingerprint.clone(),
+                sample_rate: rate,
+                done_chunks: index + 1,
+                samples,
+            };
+            let temp = chunk_meta.with_extension("json.tmp");
+            std::fs::write(&temp, serde_json::to_vec(&checkpoint)?)?;
+            std::fs::rename(&temp, &chunk_meta)?;
+            Ok(())
+        };
         model
             .generate_audio_stream(
                 &voice_state,
@@ -836,8 +1015,10 @@ fn render_to_file<Q: CpuBackend>(
                 max_tokens,
                 frames_after_eos,
                 teacher_force_previous_chunk,
-                &AtomicBool::new(false),
+                skip_chunks,
+                stop,
                 &mut on_chunk,
+                Some(&mut on_chunk_done),
             )
             .map_err(|e| e.to_string())
     })();
@@ -848,7 +1029,12 @@ fn render_to_file<Q: CpuBackend>(
         .map_err(|_| "the audio writer thread panicked".to_string())?
         .map_err(|e| e.to_string())?;
     generation?;
-    Ok((written, sample_rate))
+    let cancelled = stop.load(Ordering::SeqCst);
+    if !cancelled {
+        let _ = std::fs::remove_file(&part_path);
+        let _ = std::fs::remove_file(&meta_path);
+    }
+    Ok((written, sample_rate, cancelled))
 }
 
 /// Writes the in-app console transcript to a file, with a header describing the build and the

@@ -2,6 +2,45 @@
 
 All notable changes to Pocket TTS (the Windows wrapper) are documented here.
 
+## [Unreleased]
+
+## [1.1.0] - 2026-11-24
+
+The workflow release: generation and long renders can now be stopped and picked up again, voices
+can be auditioned before use, and the app keeps its settings between launches.
+
+### Added
+- **Stop** for generation and long-form rendering: the engine ends at the next chunk and keeps
+  the audio finished so far, instead of leaving a long render to run to completion.
+- **Resume unfinished render**: an interrupted text-file render checkpoints every finished
+  sentence (`<output>.resume.json` plus the raw samples in `<output>.resume.pcm`) and continues
+  from there, appending to the same file, even after an app restart.
+- **Voice previews**: picking a built-in voice plays the short sample "Hello, this is how I
+  sound.", cached per voice for the session, with a checkbox to turn it off.
+- **Recent clips**: every generation this session is listed with its voice and length; clicking
+  one reloads it into the player so it can be exported again without re-synthesizing.
+- **Speak the clipboard from anywhere**: a tray icon and the global shortcut `Ctrl+Alt+S` read the
+  clipboard and send it to the app to be spoken.
+- The advanced sliders, language, voice, gender filter, quantize switch and preview toggle are
+  remembered across launches.
+
+### Changed
+- A missing WebView2 runtime now shows a dialog explaining the fix and offering the download page,
+  instead of the app exiting silently.
+- The bundled user guide (`README.txt`) documents export formats, long-form rendering and resume,
+  recent clips, voice previews, the tray shortcut and saved settings.
+
+### Tooling
+- A scheduled `Upstream check` workflow compares the vendored `configs/` and the `vendor/ptts`
+  revision with upstream and opens or updates an issue when they move, so wrapper fixes no longer
+  depend on someone remembering to look.
+
+### Fixed
+- The Stop button now shares the Generate row instead of taking its full width, which had pushed
+  it over the card edge and squeezed "Generate speech" onto two lines.
+- Durations under ten seconds are shown to a tenth of a second, so a generation stopped part-way
+  through its first chunk reads "0.8s" instead of the misleading "0s".
+
 ## [1.0.1] - 2026-11-24
 
 ### Fixed

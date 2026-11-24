@@ -2,6 +2,7 @@
 //! quantized), keyed by the settings the model was loaded with. Generations on the same
 //! backend are serialized behind the mutex, as the engine is not thread-safe.
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use crate::model::{CpuBackend, LoadOptions, TtsModel, VoiceState};
@@ -22,9 +23,26 @@ pub struct Bundle<Q: CpuBackend> {
 pub struct AppState {
     f32: Mutex<Option<Bundle<F32Backend>>>,
     q8: Mutex<Option<Bundle<Q8Backend>>>,
+    /// Set by the Stop button; the engine checks it between chunks and generation steps.
+    cancel: AtomicBool,
 }
 
 impl AppState {
+    /// Clears a previous stop request before a new generation starts.
+    pub fn begin_generation(&self) {
+        self.cancel.store(false, Ordering::SeqCst);
+    }
+
+    /// Asks the running generation to stop at its next checkpoint.
+    pub fn request_cancel(&self) {
+        self.cancel.store(true, Ordering::SeqCst);
+    }
+
+    /// The flag the engine polls while it generates.
+    pub fn stop_flag(&self) -> &AtomicBool {
+        &self.cancel
+    }
+
     pub fn f32_slot(&self) -> std::sync::MutexGuard<'_, Option<Bundle<F32Backend>>> {
         self.f32.lock().unwrap_or_else(|e| e.into_inner())
     }
@@ -32,6 +50,7 @@ impl AppState {
     pub fn q8_slot(&self) -> std::sync::MutexGuard<'_, Option<Bundle<Q8Backend>>> {
         self.q8.lock().unwrap_or_else(|e| e.into_inner())
     }
+
 }
 
 /// Loads a model and its default voice. Blocks: run off the UI thread.

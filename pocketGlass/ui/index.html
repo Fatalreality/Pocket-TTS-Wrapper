@@ -101,9 +101,20 @@
               <textarea id="text" placeholder="Type anything to synthesize…"></textarea>
               <div class="counter"><span id="chars">0</span> chars</div>
             </div>
-            <button type="button" class="btn primary pill-btn" id="bt-generate">
-              Generate speech
-            </button>
+            <div class="gen-actions">
+              <button type="button" class="btn primary pill-btn" id="bt-generate">
+                Generate speech
+              </button>
+              <button
+                type="button"
+                class="btn glass-pill stop-btn"
+                id="bt-stop"
+                title="Stop generating and keep the audio finished so far"
+                hidden
+              >
+                Stop
+              </button>
+            </div>
             <div class="spinner" id="gen-spinner" style="display:none">
               <div class="dot"></div><div class="dot"></div><div class="dot"></div>
             </div>
@@ -115,6 +126,15 @@
               title="Render a whole .txt file to a WAV, MP3 or Ogg file"
             >
               Render a text file…
+            </button>
+            <button
+              type="button"
+              class="btn glass-pill render-file-btn"
+              id="bt-resume-render"
+              title="Continue the last interrupted render where it stopped"
+              hidden
+            >
+              Resume unfinished render
             </button>
           </section>
 
@@ -154,6 +174,16 @@
                 <span class="readout-lbl">Rate</span>
                 <span class="readout-val" id="rate-val">–</span>
               </span>
+            </div>
+          </section>
+
+          <section class="card history-card">
+            <div class="card-head">
+              <h2>Recent</h2>
+              <span class="card-tag">This session</span>
+            </div>
+            <div class="history-list" id="history-list">
+              <div class="history-empty">Generated clips appear here.</div>
             </div>
           </section>
         </div>
@@ -207,6 +237,10 @@
               </button>
               <div class="mini-chip" id="voice-chip">none</div>
             </div>
+            <label class="preview-toggle" title="Play a short sample when you pick a built-in voice">
+              <input type="checkbox" id="preview-voices" checked />
+              <span>Hear a voice when it is picked</span>
+            </label>
           </section>
         </div>
 

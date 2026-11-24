@@ -21,13 +21,15 @@ mod tokenizer;
 mod weights;
 
 use commands::{
-    app_info, check_update, clear_terminal_logs, export_voice, generate, get_hf_status,
-    get_languages, get_terminal_logs, get_voices, install_update, load_model, render_text_file,
-    save_audio, save_logs, set_hf_token,
+    app_info, cancel_generation, check_update, clear_terminal_logs, export_voice, generate,
+    get_hf_status, get_languages, get_terminal_logs, get_voices, install_update, load_model,
+    render_text_file, save_audio, save_logs, set_hf_token,
 };
 use logging::init as logging_init;
 use state::AppState;
 use std::sync::Arc;
+use tauri::Emitter;
+use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState};
 
 #[cfg(target_os = "windows")]
 #[repr(C)]
@@ -243,6 +245,145 @@ fn set_window_style(window: tauri::WebviewWindow, theme: String, surface: String
     }
 }
 
+/// The global shortcut that speaks whatever is on the clipboard: Ctrl+Alt+S.
+fn speak_shortcut() -> Shortcut {
+    Shortcut::new(Some(Modifiers::CONTROL | Modifiers::ALT), Code::KeyS)
+}
+
+/// Brings the window back from the tray, un-minimized and focused.
+fn show_main(app: &tauri::AppHandle) {
+    use tauri::Manager;
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.show();
+        let _ = window.unminimize();
+        let _ = window.set_focus();
+    }
+}
+
+/// Reads the clipboard and asks the frontend to speak it. Used by the tray menu and the global
+/// shortcut, so text from any application can be read aloud without copying it into the app.
+fn speak_clipboard(app: &tauri::AppHandle) {
+    use tauri_plugin_clipboard_manager::ClipboardExt;
+    let text = match app.clipboard().read_text() {
+        Ok(text) if !text.trim().is_empty() => text,
+        Ok(_) => {
+            log::warn!("Speak clipboard: the clipboard has no text");
+            return;
+        }
+        Err(e) => {
+            log::warn!("Speak clipboard: cannot read the clipboard: {e}");
+            return;
+        }
+    };
+    show_main(app);
+    if let Err(e) = app.emit("speak-text", text) {
+        log::warn!("Speak clipboard: cannot reach the window: {e}");
+    }
+}
+
+/// Tray icon: show the window, speak the clipboard, quit. Closing the window keeps the app in
+/// the tray, so the shortcut keeps working.
+fn build_tray(app: &tauri::AppHandle) -> tauri::Result<()> {
+    use tauri::menu::{Menu, MenuItem};
+    use tauri::tray::TrayIconBuilder;
+
+    let show = MenuItem::with_id(app, "show", "Show Pocket TTS", true, None::<&str>)?;
+    let speak = MenuItem::with_id(
+        app,
+        "speak",
+        "Speak clipboard (Ctrl+Alt+S)",
+        true,
+        None::<&str>,
+    )?;
+    let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
+    let menu = Menu::with_items(app, &[&show, &speak, &quit])?;
+
+    let mut tray = TrayIconBuilder::with_id("pocket-tts")
+        .tooltip("Pocket TTS — Ctrl+Alt+S speaks the clipboard")
+        .menu(&menu)
+        .show_menu_on_left_click(false)
+        .on_menu_event(|app, event| match event.id.as_ref() {
+            "show" => show_main(app),
+            "speak" => speak_clipboard(app),
+            "quit" => app.exit(0),
+            _ => {}
+        });
+    if let Some(icon) = app.default_window_icon() {
+        tray = tray.icon(icon.clone());
+    }
+    tray.build(app)?;
+    Ok(())
+}
+
+/// A UTF-16, NUL-terminated copy of `text`, for the Win32 calls below.
+#[cfg(target_os = "windows")]
+fn wide(text: &str) -> Vec<u16> {
+    text.encode_utf16().chain(std::iter::once(0)).collect()
+}
+
+#[cfg(target_os = "windows")]
+#[link(name = "user32")]
+extern "system" {
+    fn MessageBoxW(hwnd: isize, text: *const u16, caption: *const u16, flags: u32) -> i32;
+}
+
+#[cfg(target_os = "windows")]
+#[link(name = "shell32")]
+extern "system" {
+    fn ShellExecuteW(
+        hwnd: isize,
+        operation: *const u16,
+        file: *const u16,
+        parameters: *const u16,
+        directory: *const u16,
+        show: i32,
+    ) -> isize;
+}
+
+/// Why the app could not start, in a dialog instead of a silent exit: the usual cause is a
+/// missing WebView2 runtime, and the message offers the download page so it can be fixed.
+#[cfg(target_os = "windows")]
+fn report_startup_failure(error: &str) -> ! {
+    const MB_ICONERROR: u32 = 0x10;
+    const MB_YESNO: u32 = 0x04;
+    const IDYES: i32 = 6;
+    const SW_SHOWNORMAL: i32 = 1;
+    const WEBVIEW2_DOWNLOAD: &str = "https://go.microsoft.com/fwlink/p/?LinkId=2124703";
+
+    let message = format!(
+        "Pocket TTS could not start.\n\nThe Microsoft Edge WebView2 runtime is usually the \
+         missing piece on Windows 10; installing it and starting Pocket TTS again fixes this.\n\n\
+         Open the WebView2 download page now?\n\nDetails: {error}"
+    );
+    let text = wide(&message);
+    let caption = wide("Pocket TTS");
+    // SAFETY: both strings are correctly sized NUL-terminated UTF-16 buffers that outlive the
+    // call, and the handle is 0 for "no owner window", which is what a pre-window failure has.
+    let answer = unsafe { MessageBoxW(0, text.as_ptr(), caption.as_ptr(), MB_ICONERROR | MB_YESNO) };
+    if answer == IDYES {
+        let operation = wide("open");
+        let url = wide(WEBVIEW2_DOWNLOAD);
+        // SAFETY: same as above; ShellExecuteW only opens the URL in the default browser.
+        unsafe {
+            ShellExecuteW(
+                0,
+                operation.as_ptr(),
+                url.as_ptr(),
+                std::ptr::null(),
+                std::ptr::null(),
+                SW_SHOWNORMAL,
+            );
+        }
+    }
+    std::process::exit(1)
+}
+
+#[cfg(not(target_os = "windows"))]
+fn report_startup_failure(error: &str) -> ! {
+    eprintln!("Pocket TTS could not start: {error}");
+    std::process::exit(1)
+}
+
 fn main() {
     logging_init(false);
     if std::env::var_os("RAYON_NUM_THREADS").is_none() {
@@ -252,12 +393,23 @@ fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_clipboard_manager::init())
+        .plugin(
+            tauri_plugin_global_shortcut::Builder::new()
+                .with_handler(|app, shortcut, event| {
+                    if event.state() == ShortcutState::Pressed && *shortcut == speak_shortcut() {
+                        speak_clipboard(app);
+                    }
+                })
+                .build(),
+        )
         .manage(Arc::new(AppState::default()))
         .invoke_handler(tauri::generate_handler![
             load_model,
             get_voices,
             get_languages,
             generate,
+            cancel_generation,
             save_audio,
             export_voice,
             app_info,
@@ -275,6 +427,25 @@ fn main() {
             // Register app handle for terminal log broadcast to the frontend
             logging::set_app_handle(app.handle().clone());
             logging::add_log_entry("INFO", "Pocket TTS engine initialized successfully.");
+
+            // The tray and the global shortcut are how the app is used from another window:
+            // select text anywhere, press Ctrl+Alt+S (or use the tray), and it is spoken here.
+            if let Err(e) = build_tray(app.handle()) {
+                log::warn!("no tray icon: {e}");
+            }
+            match app.global_shortcut().register(speak_shortcut()) {
+                Ok(()) => logging::add_log_entry(
+                    "INFO",
+                    "Global shortcut Ctrl+Alt+S speaks the clipboard.",
+                ),
+                Err(e) => {
+                    log::warn!("Ctrl+Alt+S is unavailable: {e}");
+                    logging::add_log_entry(
+                        "WARN",
+                        &format!("Global shortcut Ctrl+Alt+S is unavailable: {e}"),
+                    );
+                }
+            }
 
             // Blur whatever is behind the window without painting a background: the
             // frontend supplies the glass colour, the desktop shows through it.
@@ -300,5 +471,5 @@ fn main() {
             Ok(())
         })
         .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .unwrap_or_else(|e| report_startup_failure(&e.to_string()));
 }

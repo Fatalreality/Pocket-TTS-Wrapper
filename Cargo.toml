@@ -1,6 +1,6 @@
 [package]
 name = "pocket-tts-app"
-version = "1.0.1"
+version = "1.1.0"
 edition = "2021"
 description = "Kyutai Pocket TTS desktop application with Liquid Glass UI"
 
@@ -9,9 +9,11 @@ name = "pocket-tts-app"
 path = "src/main.rs"
 
 [dependencies]
-tauri = { version = "2", default-features = false, features = ["wry", "compression", "common-controls-v6"] }
+tauri = { version = "2", default-features = false, features = ["wry", "compression", "common-controls-v6", "tray-icon"] }
 tauri-plugin-dialog = "2"
 tauri-plugin-updater = "2"
+tauri-plugin-clipboard-manager = "2"
+tauri-plugin-global-shortcut = "2"
 anyhow = "1"
 log = "0.4"
 serde = { version = "1", features = ["derive"] }

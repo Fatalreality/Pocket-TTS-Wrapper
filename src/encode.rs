@@ -80,6 +80,19 @@ fn sample_bytes(pcm: &[f32]) -> Vec<u8> {
     bytes
 }
 
+/// Mono 16-bit little-endian samples, the format a resumed render keeps beside its output.
+pub(crate) fn pcm_to_pcm16(pcm: &[f32]) -> Vec<u8> {
+    sample_bytes(pcm)
+}
+
+/// The inverse of [`pcm_to_pcm16`]; a trailing odd byte is ignored.
+pub(crate) fn pcm16_to_pcm(bytes: &[u8]) -> Vec<f32> {
+    bytes
+        .chunks_exact(2)
+        .map(|pair| i16::from_le_bytes([pair[0], pair[1]]) as f32 / 32768.0)
+        .collect()
+}
+
 /// A WAV being written as audio arrives. The RIFF sizes are patched in when it is finished.
 pub(crate) struct WavWriter {
     file: BufWriter<File>,
@@ -407,6 +420,16 @@ mod tests {
         let bytes = encode_in_memory(Codec::Ogg, &tone(24000), 24000).unwrap();
         assert!(bytes.len() > 1000, "ogg output too small: {}", bytes.len());
         assert_eq!(&bytes[0..4], b"OggS");
+    }
+
+    #[test]
+    fn pcm16_round_trips() {
+        let pcm = tone(777);
+        let back = pcm16_to_pcm(&pcm_to_pcm16(&pcm));
+        assert_eq!(back.len(), pcm.len());
+        for (a, b) in pcm.iter().zip(back.iter()) {
+            assert!((a - b).abs() < 2.0 / 32768.0);
+        }
     }
 
     #[test]

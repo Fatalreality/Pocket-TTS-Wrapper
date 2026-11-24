@@ -181,6 +181,10 @@
     btTermToggle: document.getElementById("bt-term-toggle"),
     btUpdate: document.getElementById("bt-update"),
     btRenderFile: document.getElementById("bt-render-file"),
+    btStop: document.getElementById("bt-stop"),
+    btResumeRender: document.getElementById("bt-resume-render"),
+    historyList: document.getElementById("history-list"),
+    previewVoices: document.getElementById("preview-voices"),
   };
 
   // ---------- state ----------
@@ -197,6 +201,14 @@
   let activeGenderFilter = "all";
   let voicesCache = [];
   let terminalLogs = [];
+  let modelReady = false;
+  let busyKind = null;            // "generate" or "render" while a job runs
+  let history = [];               // clips generated since launch
+  let activeHistoryId = null;
+  const previewCache = new Map(); // voice key -> object URL of its sample
+  const previewPending = new Set();
+  const previewAudio = new Audio();
+  const PREVIEW_TEXT = "Hello, this is how I sound.";
 
   // ---------- helpers ----------
   function toast(msg, ms = 4000) {
@@ -211,11 +223,196 @@
     btn.disabled = !on;
   }
 
+  // Durations are shown to a tenth of a second while they are short, so a generation stopped
+  // part-way through its first chunk reads "0.8s kept" instead of a bare "0s".
   function fmtMs(ms) {
-    const s = Math.floor(ms / 1000);
+    if (!(ms > 0)) return "0s";
+    if (ms < 10000) return `${(ms / 1000).toFixed(1)}s`;
+    const s = Math.round(ms / 1000);
     const m = Math.floor(s / 60);
     const r = s % 60;
-    return m ? `${m}:${String(r).padStart(2, "0")}` : `${r}s`;
+    return m ? `${m}:${String(r).padStart(2, "0")}` : `${s}s`;
+  }
+
+  // A running job swaps Generate for Stop, so a long render can always be abandoned.
+  function setBusy(kind) {
+    busyKind = kind;
+    if (els.btStop) {
+      els.btStop.hidden = !kind;
+      if (!kind) els.btStop.disabled = false;
+    }
+    if (els.btGenerate) els.btGenerate.disabled = !!kind || !modelReady;
+    if (els.btRenderFile) els.btRenderFile.disabled = !!kind;
+    if (els.btResumeRender) els.btResumeRender.disabled = !!kind;
+  }
+
+  // ---------- settings that survive a restart ----------
+  const SETTINGS_KEY = "pocket-tts-settings";
+  const RESUME_KEY = "pocket-tts-resume";
+
+  function readSettings() {
+    try {
+      return JSON.parse(localStorage.getItem(SETTINGS_KEY) || "{}") || {};
+    } catch {
+      return {};
+    }
+  }
+
+  function saveSettings() {
+    if (!els.temp) return;
+    try {
+      localStorage.setItem(
+        SETTINGS_KEY,
+        JSON.stringify({
+          language: els.language.value,
+          voice: selectedVoiceName,
+          gender: activeGenderFilter,
+          temp: els.temp.value,
+          eos: els.eos.value,
+          steps: els.steps.value,
+          maxtok: els.maxtok.value,
+          nc: els.nc.value,
+          ncUnset: els.nc.dataset.unset === "true",
+          tforce: els.tforce.checked,
+          quantize: els.quantize.checked,
+          preview: !!(els.previewVoices && els.previewVoices.checked),
+        })
+      );
+    } catch {}
+  }
+
+  // Restores the sliders, voice and language picked last time, before the model loads, so the
+  // first generation already uses them.
+  function applySettings(s) {
+    const setRange = (input, label, value) => {
+      if (!input || value === undefined || value === null) return;
+      input.value = value;
+      if (label) label.textContent = value;
+      updateRangeFill(input);
+    };
+    setRange(els.temp, els.tempVal, s.temp);
+    setRange(els.eos, els.eosVal, s.eos);
+    setRange(els.steps, els.stepsVal, s.steps);
+    setRange(els.maxtok, els.maxtokVal, s.maxtok);
+    setRange(els.nc, els.ncVal, s.nc);
+    if (s.ncUnset === false) els.nc.dataset.unset = "false";
+    if (typeof s.tforce === "boolean") els.tforce.checked = s.tforce;
+    if (typeof s.quantize === "boolean") els.quantize.checked = s.quantize;
+    if (typeof s.preview === "boolean" && els.previewVoices) {
+      els.previewVoices.checked = s.preview;
+    }
+    if (s.gender) {
+      activeGenderFilter = s.gender;
+      els.genderFilterBtns.forEach(b =>
+        b.classList.toggle("active", b.dataset.gender === s.gender)
+      );
+    }
+    if (s.voice) selectedVoiceName = s.voice;
+  }
+
+  // ---------- unfinished renders ----------
+  function readResumeJob() {
+    try {
+      return JSON.parse(localStorage.getItem(RESUME_KEY) || "null");
+    } catch {
+      return null;
+    }
+  }
+
+  function writeResumeJob(job) {
+    try {
+      if (job) localStorage.setItem(RESUME_KEY, JSON.stringify(job));
+      else localStorage.removeItem(RESUME_KEY);
+    } catch {}
+    if (els.btResumeRender) els.btResumeRender.hidden = !job;
+  }
+
+  // ---------- clips generated this session ----------
+  function addHistory(entry) {
+    history.unshift({ ...entry, id: `clip-${Date.now()}-${history.length}`, at: new Date() });
+    while (history.length > 20) {
+      const dropped = history.pop();
+      if (dropped && dropped.url) URL.revokeObjectURL(dropped.url);
+    }
+    renderHistory();
+  }
+
+  function renderHistory() {
+    const list = els.historyList;
+    if (!list) return;
+    if (!history.length) {
+      list.innerHTML = '<div class="history-empty">Generated clips appear here.</div>';
+      return;
+    }
+    list.innerHTML = "";
+    for (const clip of history) {
+      const item = document.createElement("button");
+      item.type = "button";
+      item.className = "history-item" + (clip.id === activeHistoryId ? " active" : "");
+      item.title = clip.text;
+      const when = clip.at.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+      item.innerHTML = `
+        <span class="history-snippet">${escapeHtml(clip.snippet)}</span>
+        <span class="history-meta">${escapeHtml(clip.voice)} · ${fmtMs(clip.duration)} · ${when}</span>
+      `;
+      item.onclick = () => {
+        activeHistoryId = clip.id;
+        wavBase64 = clip.wav;
+        showAudio(clip.wav, clip.duration, clip.sampleRate);
+        renderHistory();
+      };
+      list.appendChild(item);
+    }
+  }
+
+  // ---------- voice samples ----------
+  async function previewVoice(name, pill) {
+    // A running job owns the engine; a preview would queue behind it and reset its stop flag.
+    if (!invoke || !modelReady || busyKind || !name) return;
+    const key = `${els.language.value}|${name}`;
+    const cached = previewCache.get(key);
+    if (cached) {
+      previewAudio.src = cached;
+      previewAudio.play().catch(() => {});
+      return;
+    }
+    if (previewPending.has(key)) return;
+    previewPending.add(key);
+    if (pill) pill.classList.add("previewing");
+    try {
+      const ncValue = els.nc.dataset.unset === "true" ? undefined : parseFloat(els.nc.value);
+      const steps = parseInt(els.steps.value, 10) || undefined;
+      const res = await api("generate", {
+        text: PREVIEW_TEXT,
+        language: els.language.value,
+        config: null,
+        voice: name,
+        sampler_decode_steps: steps,
+        samplerDecodeSteps: steps,
+        temperature: parseFloat(els.temp.value) || undefined,
+        noise_clamp: ncValue,
+        noiseClamp: ncValue,
+        eos_threshold: parseFloat(els.eos.value) || undefined,
+        eosThreshold: parseFloat(els.eos.value) || undefined,
+        quantize: els.quantize.checked,
+      });
+      const bytes = atobToBytes(res.wav_base64);
+      const url = URL.createObjectURL(new Blob([bytes], { type: "audio/wav" }));
+      if (previewCache.size >= 16) {
+        const [oldKey, oldUrl] = previewCache.entries().next().value;
+        URL.revokeObjectURL(oldUrl);
+        previewCache.delete(oldKey);
+      }
+      previewCache.set(key, url);
+      previewAudio.src = url;
+      previewAudio.play().catch(() => {});
+      addClientLog("TTS", `Voice preview: ${name}`);
+    } catch (e) {
+      addClientLog("WARN", `Voice preview failed: ${e.message || e}`);
+    } finally {
+      previewPending.delete(key);
+      if (pill) pill.classList.remove("previewing");
+    }
   }
 
   function toggleLightDark() {
@@ -406,6 +603,7 @@
         els.recChip.textContent = "none";
         els.voiceChip.textContent = v.name;
         renderVoices(voices, filterLang, activeGenderFilter);
+        if (!els.previewVoices || els.previewVoices.checked) previewVoice(v.name, pill);
       };
       grid.appendChild(pill);
     }
@@ -429,6 +627,7 @@
       };
       grid.appendChild(pill);
     }
+    saveSettings();
   }
 
   // ---------- Mock data for graceful degradation ----------
@@ -492,6 +691,9 @@
     if (cmd === "render_text_file") {
       throw new Error("Rendering a text file needs the desktop app");
     }
+    if (cmd === "cancel_generation") {
+      return true;
+    }
     if (cmd === "load_model") {
       return "Model ready (browser preview)";
     }
@@ -520,11 +722,12 @@
     try {
       const langs = await api("get_languages");
       els.language.innerHTML = "";
+      const saved = readSettings();
       for (const l of langs) {
         const opt = document.createElement("option");
         opt.value = l.code;
         opt.textContent = l.name;
-        if (l.code === "english") opt.selected = true;
+        if (l.code === (saved.language || "english")) opt.selected = true;
         els.language.appendChild(opt);
       }
       await onLanguageChange();
@@ -571,13 +774,16 @@
       els.modelStatus.textContent = msg;
       els.modelProgress.style.width = "100%";
       setChipModel("Model ready", "on");
-      setEnabled(els.btGenerate, true);
+      modelReady = true;
+      setBusy(busyKind);
       addClientLog("INFO", `Model loaded: ${msg}`);
       await checkHfStatus();
     } catch (e) {
       els.modelStatus.textContent = "Failed: " + e;
       els.modelProgress.style.width = "0%";
       setChipModel("Model failed", "err");
+      modelReady = false;
+      setBusy(null);
       toast("Model load failed: " + e);
     } finally {
       setEnabled(els.btLoad, true);
@@ -717,7 +923,7 @@
     const q = els.quantize.checked;
     const ncValue = els.nc.dataset.unset === "true" ? undefined : parseFloat(els.nc.value);
 
-    setEnabled(els.btGenerate, false);
+    setBusy("generate");
     els.genSpinner.style.display = "flex";
     els.audio.src = "";
     els.audioScrub.value = 0;
@@ -747,28 +953,28 @@
         quantize: q,
       });
       wavBase64 = res.wav_base64;
-
-      const bytes = atobToBytes(wavBase64);
-      const blob = new Blob([bytes], { type: "audio/wav" });
-      const url = URL.createObjectURL(blob);
-      els.audio.src = url;
-      els.audio.play().catch(() => {});
-
-      els.durVal.textContent = fmtMs(res.duration_ms);
-      els.rateVal.textContent = `${res.sample_rate} Hz`;
-      els.genStatus.textContent = `Done — ${fmtMs(res.duration_ms)}`;
-      setChipOutput(`Audio ${fmtMs(res.duration_ms)}`);
-
-      // Decode audio for waveform display
-      try {
-        const ac = new (window.AudioContext || window.webkitAudioContext)();
-        const ab = await ac.decodeAudioData(bytes.buffer.slice(0));
-        drawWaveform(ab.getChannelData(0));
-        await ac.close().catch(() => {});
-      } catch {
-        drawWaveform(null);
+      const url = await showAudio(wavBase64, res.duration_ms, res.sample_rate);
+      if (res.cancelled) {
+        els.genStatus.textContent = `Stopped — kept ${fmtMs(res.duration_ms)}`;
+        addClientLog("TTS", `Generation stopped after ${fmtMs(res.duration_ms)}`);
+        toast("Generation stopped — the audio finished so far is kept");
+      } else {
+        els.genStatus.textContent = `Done — ${fmtMs(res.duration_ms)}`;
+        addClientLog("TTS", `Generated speech: ${res.num_samples} samples, ${fmtMs(res.duration_ms)}`);
       }
-      addClientLog("TTS", `Generated speech: ${res.num_samples} samples, ${fmtMs(res.duration_ms)}`);
+      if (res.num_samples > 0) {
+        const source = recordedPath || selectedVoice;
+        const voiceLabel = source ? source.split(/[\\/]/).pop() : selectedVoiceName;
+        addHistory({
+          text,
+          snippet: text.length > 60 ? text.slice(0, 60) + "…" : text,
+          voice: voiceLabel,
+          duration: res.duration_ms,
+          sampleRate: res.sample_rate,
+          wav: wavBase64,
+          url,
+        });
+      }
     } catch (e) {
       const errStr = String(e.message || e);
       els.genStatus.textContent = "Error: " + errStr;
@@ -784,8 +990,29 @@
       addClientLog("ERROR", `Generation failed: ${errStr}`);
     } finally {
       els.genSpinner.style.display = "none";
-      setEnabled(els.btGenerate, true);
+      setBusy(null);
     }
+  }
+
+  // Puts a clip in the player and draws its waveform, returning its blob URL.
+  async function showAudio(base64, durationMs, sampleRate) {
+    const bytes = atobToBytes(base64);
+    const blob = new Blob([bytes], { type: "audio/wav" });
+    const url = URL.createObjectURL(blob);
+    els.audio.src = url;
+    els.audio.play().catch(() => {});
+    els.durVal.textContent = fmtMs(durationMs);
+    els.rateVal.textContent = `${sampleRate} Hz`;
+    setChipOutput(`Audio ${fmtMs(durationMs)}`);
+    try {
+      const ac = new (window.AudioContext || window.webkitAudioContext)();
+      const ab = await ac.decodeAudioData(bytes.buffer.slice(0));
+      drawWaveform(ab.getChannelData(0));
+      await ac.close().catch(() => {});
+    } catch {
+      drawWaveform(null);
+    }
+    return url;
   }
 
   function atobToBytes(b64) {
@@ -855,35 +1082,36 @@
   }
 
   // ---------- long form: render a whole text file ----------
-  async function renderTextFile() {
-    const input = await pickOpen([
-      { name: "Text files (*.txt, *.md)", extensions: ["txt", "md"] },
-    ]);
-    if (!input) return;
-    const stem = input.split(/[\\/]/).pop().replace(/\.[^.]+$/, "") || "text";
-    let output = await pickSave(AUDIO_FILTERS, `pocket-tts-${stem}.wav`);
-    if (!output) return;
-    if (!/\.(wav|mp3|ogg)$/i.test(output)) output += ".wav";
+  async function renderTextFile(job) {
+    let input;
+    let output;
+    let args;
+    let resume = false;
 
-    const ncValue = els.nc.dataset.unset === "true" ? undefined : parseFloat(els.nc.value);
-    const activeVoice = recordedPath || selectedVoice || selectedVoiceName || undefined;
-    setEnabled(els.btGenerate, false);
-    if (els.btRenderFile) setEnabled(els.btRenderFile, false);
-    els.genSpinner.style.display = "flex";
-    els.genStatus.textContent = "Rendering text file…";
-    addClientLog("INFO", `Rendering ${input} to ${output}`);
+    if (job) {
+      // Resuming uses the settings the render started with, not whatever the sliders say now.
+      input = job.input;
+      output = job.output;
+      args = job.args;
+      resume = true;
+    } else {
+      input = await pickOpen([
+        { name: "Text files (*.txt, *.md)", extensions: ["txt", "md"] },
+      ]);
+      if (!input) return;
+      const stem = input.split(/[\\/]/).pop().replace(/\.[^.]+$/, "") || "text";
+      output = await pickSave(AUDIO_FILTERS, `pocket-tts-${stem}.wav`);
+      if (!output) return;
+      if (!/\.(wav|mp3|ogg)$/i.test(output)) output += ".wav";
 
-    try {
-      const res = await api("render_text_file", {
-        input_path: input,
-        inputPath: input,
-        output_path: output,
-        outputPath: output,
+      const ncValue = els.nc.dataset.unset === "true" ? undefined : parseFloat(els.nc.value);
+      const steps = parseInt(els.steps.value, 10) || undefined;
+      args = {
         language: els.language.value,
         config: null,
-        voice: activeVoice,
-        sampler_decode_steps: parseInt(els.steps.value, 10) || undefined,
-        samplerDecodeSteps: parseInt(els.steps.value, 10) || undefined,
+        voice: recordedPath || selectedVoice || selectedVoiceName || undefined,
+        sampler_decode_steps: steps,
+        samplerDecodeSteps: steps,
         temperature: parseFloat(els.temp.value) || undefined,
         noise_clamp: ncValue,
         noiseClamp: ncValue,
@@ -894,20 +1122,76 @@
         teacher_force_previous_chunk: els.tforce.checked,
         teacherForcePreviousChunk: els.tforce.checked,
         quantize: els.quantize.checked,
+      };
+    }
+
+    const jobRecord = { input, output, args, at: Date.now() };
+    setBusy("render");
+    els.genSpinner.style.display = "flex";
+    els.genStatus.textContent = resume ? "Resuming render…" : "Rendering text file…";
+    addClientLog("INFO", `${resume ? "Resuming" : "Rendering"} ${input} to ${output}`);
+
+    try {
+      const res = await api("render_text_file", {
+        ...args,
+        input_path: input,
+        inputPath: input,
+        output_path: output,
+        outputPath: output,
+        resume,
       });
-      els.genStatus.textContent = `Saved ${fmtMs(res.duration_ms)} to ${res.output_path}`;
-      setChipOutput(`Audio ${fmtMs(res.duration_ms)}`);
-      toast("Rendered to " + res.output_path, 7000);
-      addClientLog("TTS", `Rendered ${res.num_samples} samples to ${res.output_path} (${res.format})`);
+      if (res.cancelled) {
+        writeResumeJob(jobRecord);
+        els.genStatus.textContent = `Stopped — ${fmtMs(res.duration_ms)} saved; resume to finish`;
+        toast("Render stopped — use Resume unfinished render to continue", 7000);
+        addClientLog("TTS", `Render stopped at ${fmtMs(res.duration_ms)}; progress kept for resuming`);
+      } else {
+        writeResumeJob(null);
+        els.genStatus.textContent = `Saved ${fmtMs(res.duration_ms)} to ${res.output_path}`;
+        setChipOutput(`Audio ${fmtMs(res.duration_ms)}`);
+        toast("Rendered to " + res.output_path, 7000);
+        addClientLog("TTS", `Rendered ${res.num_samples} samples to ${res.output_path} (${res.format})`);
+      }
     } catch (e) {
       const errStr = String(e.message || e);
       els.genStatus.textContent = "Error: " + errStr;
-      toast("Render failed: " + errStr, 6000);
+      if (errStr.includes("different text")) {
+        writeResumeJob(null);
+        toast("Render failed: " + errStr, 7000);
+      } else {
+        writeResumeJob(jobRecord);
+        toast("Render failed: " + errStr + " — progress kept, resume to retry", 7000);
+      }
       addClientLog("ERROR", `Render failed: ${errStr}`);
     } finally {
       els.genSpinner.style.display = "none";
-      setEnabled(els.btGenerate, true);
-      if (els.btRenderFile) setEnabled(els.btRenderFile, true);
+      setBusy(null);
+    }
+  }
+
+  async function resumeRender() {
+    const job = readResumeJob();
+    if (!job) {
+      writeResumeJob(null);
+      toast("There is no interrupted render to resume");
+      return;
+    }
+    await renderTextFile(job);
+  }
+
+  // Stop ends the job at its next chunk boundary and keeps whatever was finished.
+  async function stopGeneration() {
+    if (!busyKind) return;
+    if (els.btStop) els.btStop.disabled = true;
+    try {
+      els.genStatus.textContent = "Stopping…";
+      await api("cancel_generation");
+    } catch (e) {
+      toast("Could not stop: " + (e.message || e));
+    } finally {
+      setTimeout(() => {
+        if (els.btStop) els.btStop.disabled = false;
+      }, 2000);
     }
   }
 
@@ -1250,7 +1534,9 @@
   els.btLoad.onclick = loadModel;
   els.btGenerate.onclick = generate;
   els.btSave.onclick = saveAudio;
-  if (els.btRenderFile) els.btRenderFile.onclick = renderTextFile;
+  if (els.btRenderFile) els.btRenderFile.onclick = () => renderTextFile();
+  if (els.btResumeRender) els.btResumeRender.onclick = resumeRender;
+  if (els.btStop) els.btStop.onclick = stopGeneration;
   if (els.btUpdate) els.btUpdate.onclick = checkForUpdates;
   els.btRecord.onclick = toggleRecord;
 
@@ -1359,6 +1645,15 @@
   bindSlider(els.nc, els.ncVal);
   updateRangeFill(els.audioScrub);
 
+  // Every control that changes how speech sounds is remembered for the next launch.
+  [els.temp, els.eos, els.steps, els.maxtok, els.nc, els.language].forEach(input => {
+    if (input) input.addEventListener("input", saveSettings);
+    if (input) input.addEventListener("change", saveSettings);
+  });
+  [els.tforce, els.quantize, els.previewVoices].forEach(input => {
+    if (input) input.addEventListener("change", saveSettings);
+  });
+
   els.btVoicePick.onclick = async () => {
     const p = await pickOpen([
       {
@@ -1425,8 +1720,12 @@
     setThemeVariant(savedTheme);
 
     drawWaveform(null);
+    applySettings(readSettings());
     await loadLanguages();
-    setEnabled(els.btGenerate, false);
+    els.voiceChip.textContent = selectedVoiceName;
+    setBusy(null);
+    // An interrupted render stays offered until it is finished or its progress is discarded.
+    writeResumeJob(readResumeJob());
     await checkHfStatus();
 
     // Fetch initial logs from backend
@@ -1447,6 +1746,19 @@
         if (typeof seconds === "number") {
           els.genStatus.textContent = `Rendering… ${Math.round(seconds)}s of audio so far`;
         }
+      });
+      // The global shortcut (Ctrl+Alt+S) and the tray menu hand text over this way.
+      window.__TAURI__.event.listen("speak-text", e => {
+        const text = String((e.payload && e.payload) || "");
+        if (!text.trim()) return;
+        els.text.value = text;
+        els.text.dispatchEvent(new Event("input"));
+        addClientLog("INFO", "Clipboard text loaded from the global shortcut.");
+        if (busyKind) {
+          toast("Pocket TTS is busy — the text is waiting in the box");
+          return;
+        }
+        generate();
       });
     }
 
