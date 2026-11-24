@@ -2,6 +2,14 @@
 
 All notable changes to Pocket TTS (the Windows wrapper) are documented here.
 
+## [1.0.1] - 2026-11-24
+
+### Fixed
+- **Capitalize the first word after a leading quote or bracket**: text like
+  `"hello there," she said` now becomes `"Hello there," she said` instead of keeping the
+  lowercase first letter, matching upstream Pocket TTS. Sentences split from such a prompt
+  inherit the fix, so `(quietly.) Okay then.` becomes `(Quietly.) Okay then.`
+
 ## [1.0.0] - 2026-11-24
 
 The first non-0.x release: everything below lands together with self-updating, compressed
