@@ -27,7 +27,14 @@ use commands::{
 };
 use logging::init as logging_init;
 use state::AppState;
-use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
+
+static CURRENT_THEME: Mutex<String> = Mutex::new(String::new());
+/// The text the popup is currently offering. The popup is shown before its page may
+/// have finished loading, so it can ask for this instead of losing the emit.
+static POPUP_TEXT: Mutex<String> = Mutex::new(String::new());
+static SELECTION_POPUP_ENABLED: AtomicBool = AtomicBool::new(true);
 use tauri::Emitter;
 use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState};
 
@@ -384,6 +391,158 @@ fn report_startup_failure(error: &str) -> ! {
     std::process::exit(1)
 }
 
+
+fn popup_axis_position(cursor: i32, extent: u32, origin: i32, available: u32, gap: i32, margin: i32) -> i32 {
+    let min = origin.saturating_add(margin);
+    let max = origin
+        .saturating_add(available as i32)
+        .saturating_sub(extent as i32)
+        .saturating_sub(margin)
+        .max(min);
+    let preferred = cursor.saturating_add(gap);
+    let flipped = cursor.saturating_sub(extent as i32).saturating_sub(gap);
+    (if preferred > max { flipped } else { preferred }).clamp(min, max)
+}
+
+/// Position the popup beside the cursor, flipping at screen edges and respecting the taskbar.
+fn popup_position(
+    window: &tauri::WebviewWindow,
+    cursor_x: i32,
+    cursor_y: i32,
+) -> tauri::PhysicalPosition<i32> {
+    let (width, height) = window
+        .outer_size()
+        .map(|size| (size.width, size.height))
+        .unwrap_or((280, 184));
+    let monitor = window
+        .monitor_from_point(cursor_x as f64, cursor_y as f64)
+        .ok()
+        .flatten()
+        .or_else(|| window.primary_monitor().ok().flatten());
+    if let Some(monitor) = monitor {
+        let area = monitor.work_area();
+        let gap = (16.0 * monitor.scale_factor()).round() as i32;
+        let margin = (8.0 * monitor.scale_factor()).round() as i32;
+        return tauri::PhysicalPosition::new(
+            popup_axis_position(cursor_x, width, area.position.x, area.size.width, gap, margin),
+            popup_axis_position(cursor_y, height, area.position.y, area.size.height, gap, margin),
+        );
+    }
+    tauri::PhysicalPosition::new(cursor_x.saturating_add(16), cursor_y.saturating_add(16))
+}
+
+/// True when the foreground window belongs to this process (the main window or the
+/// selection popup). Focus moving into our own windows must not be mistaken for the
+/// user having cleared their selection, or the popup hides and immediately reappears.
+#[cfg(target_os = "windows")]
+fn foreground_is_own() -> bool {
+    use windows::Win32::System::Threading::GetCurrentProcessId;
+    use windows::Win32::UI::WindowsAndMessaging::{GetForegroundWindow, GetWindowThreadProcessId};
+    unsafe {
+        let fg = GetForegroundWindow();
+        if fg.0.is_null() {
+            return false;
+        }
+        let mut pid = 0u32;
+        GetWindowThreadProcessId(fg, Some(&mut pid));
+        pid != 0 && pid == GetCurrentProcessId()
+    }
+}
+
+/// Shows the popup. This must go through Tauri's own show: a bare Win32 show leaves
+/// the WebView2 controller hidden, so the window appears but ignores every click.
+fn show_popup(window: &tauri::WebviewWindow) {
+    let _ = window.show();
+}
+
+/// Reads selected text using Windows UI Automation, with its cursor position.
+#[cfg(target_os = "windows")]
+fn selected_text_and_cursor() -> Option<(String, i32, i32)> {
+    use windows::core::Interface;
+    use windows::Win32::Foundation::POINT;
+    use windows::Win32::System::Com::{CoCreateInstance, CoInitializeEx, CLSCTX_INPROC_SERVER, COINIT_MULTITHREADED};
+    use windows::Win32::UI::Accessibility::{CUIAutomation, IUIAutomation, IUIAutomationTextPattern, UIA_TextPatternId};
+    use windows::Win32::UI::WindowsAndMessaging::GetCursorPos;
+    unsafe {
+        if foreground_is_own() {
+            return None;
+        }
+        let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
+        let automation: IUIAutomation = CoCreateInstance(&CUIAutomation, None, CLSCTX_INPROC_SERVER).ok()?;
+        let element = automation.GetFocusedElement().ok()?;
+        if element.CurrentIsPassword().ok().unwrap_or_default().as_bool() { return None; }
+        let pattern = element.GetCurrentPattern(UIA_TextPatternId).ok()?;
+        let text_pattern: IUIAutomationTextPattern = pattern.cast::<IUIAutomationTextPattern>().ok()?;
+        let selection = text_pattern.GetSelection().ok()?;
+        if selection.Length().ok()? == 0 { return None; }
+        let text = selection.GetElement(0).ok()?.GetText(-1).ok()?.to_string();
+        if text.trim().is_empty() { return None; }
+        let mut pt = POINT::default();
+        let _ = GetCursorPos(&mut pt);
+        Some((text, pt.x, pt.y))
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn selected_text_and_cursor() -> Option<(String, i32, i32)> { None }
+
+#[tauri::command]
+fn set_selection_popup_enabled(enabled: bool) {
+    SELECTION_POPUP_ENABLED.store(enabled, Ordering::Relaxed);
+}
+
+#[tauri::command]
+fn set_app_theme(theme: String) {
+    if let Ok(mut guard) = CURRENT_THEME.lock() { *guard = theme; }
+}
+
+#[tauri::command]
+fn get_app_theme() -> String {
+    CURRENT_THEME.lock().map(|g| if g.is_empty() { "dark".to_string() } else { g.clone() }).unwrap_or_else(|_| "dark".to_string())
+}
+
+#[tauri::command]
+fn quit_app(app: tauri::AppHandle) { app.exit(0); }
+
+/// Hides the selection popup from the backend. The popup hides itself too, but doing it
+/// here keeps the window away for certain when the webview's own hide is a no-op.
+#[tauri::command]
+fn get_popup_text() -> String {
+    POPUP_TEXT.lock().map(|g| g.clone()).unwrap_or_default()
+}
+
+#[tauri::command]
+fn hide_popup(app: tauri::AppHandle) {
+    use tauri::Manager;
+    if let Ok(mut guard) = POPUP_TEXT.lock() { guard.clear(); }
+    if let Some(window) = app.get_webview_window("popup") {
+        let _ = window.hide();
+        #[cfg(target_os = "windows")]
+        if window.is_visible().unwrap_or(false) {
+            if let Ok(hwnd) = window.hwnd() {
+                use windows::Win32::Foundation::HWND;
+                use windows::Win32::UI::WindowsAndMessaging::{ShowWindow, SW_HIDE};
+                unsafe { let _ = ShowWindow(HWND(hwnd.0), SW_HIDE); }
+            }
+        }
+    }
+}
+
+#[tauri::command]
+fn get_cached_preview(language: String, voice: String, app: tauri::AppHandle) -> Option<String> {
+    use tauri::Manager;
+    use base64::{Engine as _, engine::general_purpose::STANDARD};
+    let filename = format!("{}_{}.ogg", language, voice);
+    let mut candidates: Vec<std::path::PathBuf> = Vec::new();
+    if let Ok(dir) = app.path().resource_dir() { candidates.push(dir.join("previews").join(&filename)); }
+    candidates.push(std::path::PathBuf::from("previews").join(&filename));
+    if let Ok(cwd) = std::env::current_dir() { candidates.push(cwd.join("previews").join(&filename)); }
+    for candidate in candidates {
+        if let Ok(bytes) = std::fs::read(&candidate) { return Some(STANDARD.encode(&bytes)); }
+    }
+    None
+}
+
 fn main() {
     logging_init(false);
     if std::env::var_os("RAYON_NUM_THREADS").is_none() {
@@ -422,11 +581,108 @@ fn main() {
             check_update,
             install_update,
             set_window_style,
+            set_selection_popup_enabled,
+            set_app_theme,
+            get_app_theme,
+            get_cached_preview,
+            get_popup_text,
+            hide_popup,
+            quit_app,
         ])
         .setup(|app| {
             // Register app handle for terminal log broadcast to the frontend
             logging::set_app_handle(app.handle().clone());
             logging::add_log_entry("INFO", "Pocket TTS engine initialized successfully.");
+
+
+            // Floating popup for text selected in any application.
+            if let Err(e) = tauri::WebviewWindowBuilder::new(
+                app,
+                "popup",
+                tauri::WebviewUrl::App("popup.html".into()),
+            )
+            .title("Selection")
+            .inner_size(280.0, 184.0)
+            .decorations(false)
+            .transparent(true)
+            .always_on_top(true)
+            .skip_taskbar(true)
+            .resizable(false)
+            .visible(false)
+            .build() {
+                log::warn!("no selection popup window: {e}");
+            }
+
+            let handle = app.handle().clone();
+            std::thread::spawn(move || {
+                use tauri::Manager;
+                let mut last_shown = String::new();
+                let mut missing = 0u32;
+                let mut pending: Option<(String, i32, i32, std::time::Instant)> = None;
+                loop {
+                    let enabled = SELECTION_POPUP_ENABLED.load(Ordering::Relaxed);
+                    std::thread::sleep(std::time::Duration::from_millis(
+                        if !enabled { 1000 } else if last_shown.is_empty() && pending.is_none() { 800 } else { 300 }
+                    ));
+                    if !enabled {
+                        if !last_shown.is_empty() {
+                            last_shown.clear();
+                            pending = None;
+                            if let Some(w) = handle.get_webview_window("popup") { let _ = w.hide(); }
+                        }
+                        continue;
+                    }
+                    // Our own windows taking focus (the popup was clicked, or it is
+                    // closing) says nothing about the user's selection: leave the
+                    // popup and last_shown untouched so they cannot flicker.
+                    #[cfg(target_os = "windows")]
+                    if foreground_is_own() {
+                        continue;
+                    }
+                    #[cfg(target_os = "windows")]
+                    match selected_text_and_cursor() {
+                        Some((text, x, y)) => {
+                            missing = 0;
+                            if text == last_shown { pending = None; }
+                            else if let Some((ref old, _, _, started)) = pending {
+                                if *old != text { pending = Some((text, x, y, std::time::Instant::now())); }
+                                else if started.elapsed() >= std::time::Duration::from_millis(350) {
+                                    if let Some(w) = handle.get_webview_window("popup") {
+                                        let _ = w.set_position(popup_position(&w, x, y));
+                                        show_popup(&w);
+                                    }
+                                    if let Ok(mut guard) = POPUP_TEXT.lock() { *guard = text.clone(); }
+                                    let _ = handle.emit_to("popup", "popup-text", text.clone());
+                                    let theme = CURRENT_THEME.lock().map(|g| if g.is_empty() { "dark".to_string() } else { g.clone() }).unwrap_or_else(|_| "dark".to_string());
+                                    let _ = handle.emit_to("popup", "popup-theme", theme);
+                                    last_shown = text;
+                                    pending = None;
+                                }
+                            } else { pending = Some((text, x, y, std::time::Instant::now())); }
+                        }
+                        None => {
+                            pending = None;
+                            // A single failed read is not the user clearing the text:
+                            // focus shifting (including our own popup opening or its
+                            // timeout closing it) makes the selection briefly
+                            // unreadable. Treating that as "selection gone" cleared
+                            // last_shown, so the still-selected text re-opened the
+                            // popup in a loop. Require several misses in a row, and
+                            // more of them while the popup is on screen.
+                            missing += 1;
+                            let popup_visible = handle
+                                .get_webview_window("popup")
+                                .is_some_and(|w| w.is_visible().unwrap_or(false));
+                            let needed = if popup_visible { 12 } else { 3 };
+                            if !last_shown.is_empty() && missing >= needed {
+                                missing = 0;
+                                last_shown.clear();
+                                if let Some(w) = handle.get_webview_window("popup") { let _ = w.hide(); }
+                            }
+                        }
+                    }
+                }
+            });
 
             // The tray and the global shortcut are how the app is used from another window:
             // select text anywhere, press Ctrl+Alt+S (or use the tray), and it is spoken here.

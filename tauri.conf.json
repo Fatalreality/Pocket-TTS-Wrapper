@@ -39,7 +39,8 @@
     "resources": {
       "docs/README.txt": "README.txt",
       "docs/HF_TOKEN_GUIDE.txt": "HF_TOKEN_GUIDE.txt",
-      "docs/app-icon.webp": "app-icon.webp"
+      "docs/app-icon.webp": "app-icon.webp",
+      "previews/*": "previews/"
     },
     "windows": {
       "nsis": {

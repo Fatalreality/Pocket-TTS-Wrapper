@@ -1,0 +1,141 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="UTF-8" />
+  <title>Selection</title>
+  <style>
+    :root {
+      --bg: rgba(20,22,30,0.96);
+      --fg: #f5f5f5;
+      --muted: #b1b5bd;
+      --accent: #fbbf24;
+      --accent-hover: #fcd34d;
+      --on-accent: #1a1a1a;
+      --focus: #93c5fd;
+      --border: rgba(255,255,255,0.18);
+      --hover: rgba(255,255,255,0.16);
+    }
+    [data-theme="light"] {
+      --bg: rgba(255,255,255,0.97);
+      --fg: #1a1a1a;
+      --muted: #555;
+      --accent: #b45309;
+      --accent-hover: #92400e;
+      --on-accent: #fff;
+      --focus: #2563eb;
+      --border: rgba(0,0,0,0.18);
+      --hover: rgba(0,0,0,0.08);
+    }
+    [data-theme="green"] {
+      --bg: rgba(10,30,20,0.97);
+      --fg: #e6ffe6;
+      --muted: #b0c7ba;
+      --accent: #6ee7b7;
+      --accent-hover: #a7f3d0;
+      --on-accent: #06281a;
+      --focus: #a7f3d0;
+      --border: rgba(110,231,183,0.3);
+      --hover: rgba(110,231,183,0.18);
+    }
+    [data-theme="green-light"] {
+      --bg: rgba(240,255,245,0.97);
+      --fg: #1a3a2a;
+      --muted: #4a6a5a;
+      --accent: #15803d;
+      --accent-hover: #166534;
+      --on-accent: #fff;
+      --focus: #15803d;
+      --border: rgba(22,163,74,0.3);
+      --hover: rgba(22,163,74,0.12);
+    }
+    * { box-sizing: border-box; }
+    html, body {
+      width: 100%;
+      height: 100%;
+      margin: 0;
+      background: transparent;
+      color: var(--fg);
+      font-family: system-ui, sans-serif;
+      overflow: hidden;
+    }
+    /* Leave room around the card for its border and shadow. The native window
+       is 280x184, so the card's bottom edge stays clear of the window frame. */
+    body { padding: 8px; }
+    .card {
+      position: relative;
+      width: 100%;
+      padding: 10px 12px 12px;
+      background: var(--bg);
+      backdrop-filter: blur(14px);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      box-shadow: 0 6px 16px rgba(0,0,0,0.35);
+    }
+    .preview {
+      height: 18px;
+      margin: 0 0 8px;
+      padding-right: 24px;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 18px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .btns { display: flex; flex-direction: column; gap: 8px; }
+    button {
+      appearance: none;
+      width: 100%;
+      min-height: 34px;
+      padding: 7px 10px;
+      background: rgba(127,127,127,0.12);
+      color: var(--fg);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      font: inherit;
+      font-size: 12px;
+      line-height: 18px;
+      cursor: pointer;
+      text-align: left;
+    }
+    button:hover { background: var(--hover); }
+    button.primary { background: var(--accent); color: var(--on-accent); font-weight: 600; }
+    button.primary:hover { background: var(--accent-hover); }
+    button:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+    button:active { transform: translateY(1px); }
+    button:disabled { cursor: default; opacity: 0.6; }
+    .close {
+      position: absolute;
+      z-index: 1;
+      top: 5px;
+      right: 5px;
+      width: 24px;
+      min-height: 24px;
+      padding: 0;
+      background: none;
+      border-color: transparent;
+      border-radius: 6px;
+      color: var(--muted);
+      font-size: 16px;
+      line-height: 20px;
+      text-align: center;
+    }
+    .close:hover { color: var(--fg); }
+    @media (prefers-reduced-motion: no-preference) {
+      button { transition: background-color 120ms ease, color 120ms ease, transform 80ms ease; }
+    }
+  </style>
+</head>
+<body>
+  <div class="card" role="dialog" aria-label="Read selected text">
+    <button type="button" class="close" id="close" title="Close" aria-label="Close selection popup">×</button>
+    <div class="preview" id="preview">Selected text</div>
+    <div class="btns">
+      <button type="button" class="primary" id="gen-save">1) Generate TTS &amp; save</button>
+      <button type="button" id="play">2) Play it live</button>
+      <button type="button" id="open">3) Open the words in app</button>
+    </div>
+  </div>
+  <script src="popup.js"></script>
+</body>
+</html>

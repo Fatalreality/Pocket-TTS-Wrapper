@@ -45,6 +45,13 @@
     if (typeof drawWaveform === "function") {
       drawWaveform(lastSamples);
     }
+    // Keep the selection popup in step with the theme.
+    try {
+      if (invoke) invoke("set_app_theme", { theme: variant }).catch(() => {});
+      if (hasTauri && window.__TAURI__ && window.__TAURI__.event && window.__TAURI__.event.emitTo) {
+        window.__TAURI__.event.emitTo("popup", "theme-changed", variant).catch(() => {});
+      }
+    } catch {}
   }
 
   // ---------- Surface mode: transparent glass, high-visibility, Windows acrylic ----------
@@ -185,6 +192,8 @@
     btResumeRender: document.getElementById("bt-resume-render"),
     historyList: document.getElementById("history-list"),
     previewVoices: document.getElementById("preview-voices"),
+    minimizeToTray: document.getElementById("minimize-to-tray"),
+    selectionPopup: document.getElementById("selection-popup"),
   };
 
   // ---------- state ----------
@@ -276,6 +285,8 @@
           tforce: els.tforce.checked,
           quantize: els.quantize.checked,
           preview: !!(els.previewVoices && els.previewVoices.checked),
+          minimizeToTray: !!(els.minimizeToTray && els.minimizeToTray.checked),
+          selectionPopup: !!(els.selectionPopup && els.selectionPopup.checked),
         })
       );
     } catch {}
@@ -300,6 +311,12 @@
     if (typeof s.quantize === "boolean") els.quantize.checked = s.quantize;
     if (typeof s.preview === "boolean" && els.previewVoices) {
       els.previewVoices.checked = s.preview;
+    }
+    if (typeof s.minimizeToTray === "boolean" && els.minimizeToTray) {
+      els.minimizeToTray.checked = s.minimizeToTray;
+    }
+    if (typeof s.selectionPopup === "boolean" && els.selectionPopup) {
+      els.selectionPopup.checked = s.selectionPopup;
     }
     if (s.gender) {
       activeGenderFilter = s.gender;
@@ -378,6 +395,29 @@
     }
     if (previewPending.has(key)) return;
     previewPending.add(key);
+    // Try a pre-shipped cached preview first to avoid realtime generation.
+    try {
+      if (invoke) {
+        const b64 = await invoke("get_cached_preview", { language: els.language.value, voice: name });
+        if (b64) {
+          const bytes = atobToBytes(b64);
+          const url = URL.createObjectURL(new Blob([bytes], { type: "audio/ogg" }));
+          if (previewCache.size >= 16) {
+            const [oldKey, oldUrl] = previewCache.entries().next().value;
+            URL.revokeObjectURL(oldUrl);
+            previewCache.delete(oldKey);
+          }
+          previewCache.set(key, url);
+          previewAudio.src = url;
+          previewAudio.play().catch(() => {});
+          previewPending.delete(key);
+          if (pill) pill.classList.remove("previewing");
+          addClientLog("TTS", `Voice preview (cached): ${name}`);
+          return;
+        }
+      }
+    } catch (e) {}
+
     if (pill) pill.classList.add("previewing");
     try {
       const ncValue = els.nc.dataset.unset === "true" ? undefined : parseFloat(els.nc.value);
@@ -1747,7 +1787,79 @@
           els.genStatus.textContent = `Rendering… ${Math.round(seconds)}s of audio so far`;
         }
       });
-      // The global shortcut (Ctrl+Alt+S) and the tray menu hand text over this way.
+      // Minimize to tray on close when the setting is on.
+    if (hasTauri && window.__TAURI__ && window.__TAURI__.window) {
+      const aw = window.__TAURI__.window.getCurrentWindow();
+      aw.onCloseRequested(async (e) => {
+        const minimize = els.minimizeToTray ? els.minimizeToTray.checked : false;
+        e.preventDefault();
+        if (minimize) {
+          try { await aw.hide(); } catch {}
+        } else {
+          // Exit the whole app (the hidden selection-popup window would otherwise keep it alive).
+          try { if (invoke) await invoke("quit_app"); } catch {}
+          try { await aw.destroy(); } catch {}
+        }
+      }).catch(() => {});
+    }
+
+    // Keep the backend selection-popup watcher in step with the toggle.
+    if (els.selectionPopup) {
+      const syncPopup = () => {
+        if (invoke) invoke("set_selection_popup_enabled", { enabled: !!els.selectionPopup.checked }).catch(() => {});
+      };
+      els.selectionPopup.addEventListener("change", syncPopup);
+      syncPopup();
+    }
+    if (els.minimizeToTray) {
+      els.minimizeToTray.addEventListener("change", saveSettings);
+    }
+    if (els.selectionPopup) {
+      els.selectionPopup.addEventListener("change", saveSettings);
+    }
+
+    // Actions coming from the floating selection popup.
+    if (hasTauri && window.__TAURI__ && window.__TAURI__.event) {
+      window.__TAURI__.event.listen("popup-action", async (e) => {
+        const p = (e && e.payload) || {};
+        const text = String(p.text || "");
+        if (!text.trim()) return;
+        const action = p.action;
+        // "Open" has to bring this window to the front, not just un-hide it: the
+        // popup takes the focus while it is clicked, and hiding it hands focus back
+        // to the app the text came from. Un-minimize, show, then focus.
+        const raise = async () => {
+          try {
+            const win = window.__TAURI__.window.getCurrentWindow();
+            await win.unminimize().catch(() => {});
+            await win.show().catch(() => {});
+            await win.setFocus().catch(() => {});
+          } catch {}
+        };
+        await raise();
+        els.text.value = text;
+        els.text.dispatchEvent(new Event("input"));
+        if (action === "open") {
+          // The popup hides itself as soon as its emit resolves, which can take the
+          // focus back; claim it again once that has settled.
+          setTimeout(async () => {
+            try { els.text.focus(); els.text.scrollIntoView({ block: "nearest" }); } catch {}
+            await raise();
+          }, 120);
+          return;
+        }
+        if (busyKind) {
+          toast("Pocket TTS is busy — the text is waiting in the box");
+          return;
+        }
+        await generate();
+        if (action === "save") {
+          await saveAudio();
+        }
+      });
+    }
+
+    // The global shortcut (Ctrl+Alt+S) and the tray menu hand text over this way.
       window.__TAURI__.event.listen("speak-text", e => {
         const text = String((e.payload && e.payload) || "");
         if (!text.trim()) return;
