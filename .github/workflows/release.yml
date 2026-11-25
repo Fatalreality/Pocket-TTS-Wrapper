@@ -5,43 +5,102 @@ on:
     tags: ["v*"]
   workflow_dispatch:
 
+# The default is read-only; only the publish job is allowed to write releases.
 permissions:
-  contents: write
+  contents: read
 
 env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  release:
-    name: build and publish
+  build:
+    name: build and sign
     runs-on: windows-latest
+    permissions:
+      contents: read
     steps:
-      - uses: actions/checkout@v4
+      - name: Check out the tag
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
-      - uses: dtolnay/rust-toolchain@stable
+      # Pinned to the commit of dtolnay/rust-toolchain's `stable` branch, with the
+      # toolchain named explicitly because a SHA ref cannot carry the branch name.
+      - name: Rust toolchain
+        uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca # stable
+        with:
+          toolchain: stable
 
-      - uses: Swatinem/rust-cache@v2
+      - name: Cache the Rust build
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           key: release
 
-      - uses: actions/setup-node@v4
+      - name: Node for the Tauri CLI
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: "20"
+          cache: npm
 
-      # The updater signature is what the shipped app verifies, so the private key must come
-      # from the repository secrets; without it the bundles have no .sig and no updates.
+      # Exact CLI version from package-lock.json; no npm script and no floating tag runs.
+      - name: Install the pinned Tauri CLI
+        run: npm ci --ignore-scripts --no-audit --no-fund
+
+      # Unsigned on purpose: the updater artifact is signed in its own step below, so
+      # no compiler, package manager or other downloaded code ever shares an
+      # environment with the signing key.
       - name: Build installer and portable binary
-        run: npx --yes @tauri-apps/cli@2 build
+        run: npx --no-install tauri build --config scripts/build-unsigned.json
+
+      # The ONLY step that sees the private key. Nothing but the pinned, already
+      # installed Tauri CLI runs here: no npm, no cargo, no build scripts.
+      - name: Sign the updater package
+        shell: pwsh
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          $installer = Get-ChildItem -Path target/release/bundle/nsis -Filter *_x64-setup.exe |
+            Select-Object -First 1
+          if (-not $installer) { throw "no NSIS installer to sign" }
+          $version = (Get-Content tauri.conf.json -Raw | ConvertFrom-Json).version
+          ./node_modules/.bin/tauri.cmd signer sign --app-version $version $installer.FullName
 
       # Renames the bundles to the hyphenated names the README links to, writes
       # SHA256SUMS.txt and the updater's latest.json.
       - name: Stage release assets
         run: node scripts/release.mjs stage github-release
 
-      - name: Publish GitHub release
-        run: node scripts/release.mjs publish github-release
+      - name: Upload staged release
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: release-assets
+          path: github-release
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    name: publish
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Check out the tag
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "20"
+
+      - name: Download staged release
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: release-assets
+          path: github-release
+
+      # Creates the release as a draft, uploads and checksums every asset, and only
+      # then publishes it, so a failed upload cannot expose a partial release.
+      - name: Publish the GitHub release
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: node scripts/release.mjs publish github-release

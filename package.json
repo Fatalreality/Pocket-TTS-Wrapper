@@ -1,0 +1,8 @@
+{
+  "name": "pocket-tts-wrapper",
+  "private": true,
+  "description": "Build tooling for the Pocket TTS desktop wrapper. The app itself is Rust; this only pins the Tauri CLI.",
+  "devDependencies": {
+    "@tauri-apps/cli": "2.12.6"
+  }
+}

@@ -4,7 +4,18 @@
 
 use anyhow::{Context, Result, bail};
 use sha2::{Digest, Sha256};
+use std::io::Read;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
+
+/// A connection that never opens must not hang the worker.
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
+/// Ceiling on the whole transfer. Generous enough for a multi-gigabyte model on a slow link,
+/// but finite: the blocking client has no per-read timeout, so a stalled body is caught here.
+const TRANSFER_TIMEOUT: Duration = Duration::from_secs(60 * 60);
+/// Models are the largest download, so this is generous, but still a ceiling: an endless or
+/// hostile response cannot fill the disk or memory.
+const MAX_DOWNLOAD_BYTES: u64 = 4 * 1024 * 1024 * 1024;
 
 pub fn download_if_necessary(file_path: &str) -> Result<PathBuf> {
     if file_path.starts_with("http://") || file_path.starts_with("https://") {
@@ -64,14 +75,37 @@ fn download_url(url: &str) -> Result<PathBuf> {
     let hex: String = digest.iter().map(|b| format!("{b:02x}")).collect();
     let cached_file = cache_directory()?.join(format!("{hex}{suffix}"));
     if !cached_file.exists() {
-        let response = reqwest::blocking::get(url)
+        let client = reqwest::blocking::Client::builder()
+            .connect_timeout(CONNECT_TIMEOUT)
+            .timeout(TRANSFER_TIMEOUT)
+            .build()
+            .context("cannot create the HTTP client")?;
+        let response = client
+            .get(url)
+            .send()
             .and_then(|r| r.error_for_status())
             .with_context(|| format!("cannot download {url}"))?;
-        let bytes = response
-            .bytes()
-            .with_context(|| format!("cannot download {url}"))?;
+        if let Some(length) = response.content_length() {
+            if length > MAX_DOWNLOAD_BYTES {
+                bail!(
+                    "{url} is {length} bytes, larger than the {MAX_DOWNLOAD_BYTES}-byte limit"
+                );
+            }
+        }
+        // Stream to a partial file instead of buffering the whole response, and stop one byte
+        // past the limit so an unbounded response is refused without being kept.
         let partial = cached_file.with_extension("partial");
-        std::fs::write(&partial, &bytes)?;
+        let mut file = std::fs::File::create(&partial)
+            .with_context(|| format!("cannot create {}", partial.display()))?;
+        let written = std::io::copy(&mut response.take(MAX_DOWNLOAD_BYTES + 1), &mut file)
+            .with_context(|| format!("cannot download {url}"))?;
+        if written > MAX_DOWNLOAD_BYTES {
+            drop(file);
+            let _ = std::fs::remove_file(&partial);
+            bail!("{url} is larger than the {MAX_DOWNLOAD_BYTES}-byte limit");
+        }
+        file.sync_all()?;
+        drop(file);
         std::fs::rename(&partial, &cached_file)?;
     }
     Ok(cached_file)
