@@ -655,6 +655,11 @@ pub fn get_hf_status() -> Result<HfStatus, String> {
         .or_else(|_| std::env::var("HOME"))
         .unwrap_or_else(|_| ".".into());
     let token_path = std::path::PathBuf::from(&home).join(".cache").join("huggingface").join("token");
+    // A token file written by `hf auth login` still carries whatever permissions the folder
+    // had; tighten it on sight. Best effort: a failure here only means it stays as it was.
+    if token_path.exists() {
+        let _ = crate::secrets::restrict(&token_path);
+    }
     let env_token = std::env::var("HF_TOKEN").ok();
 
     let (has_token, token_str) = if let Ok(content) = std::fs::read_to_string(&token_path) {
@@ -688,6 +693,9 @@ pub fn get_hf_status() -> Result<HfStatus, String> {
 }
 
 /// Sets Hugging Face access token by writing to `~/.cache/huggingface/token` and `HF_TOKEN`.
+///
+/// The token file is restricted to the current user before the token is written to it, and the
+/// token is never logged: not by this command, and not by anything that runs afterwards.
 #[tauri::command]
 pub fn set_hf_token(token: String) -> Result<String, String> {
     let trimmed = token.trim();
@@ -701,7 +709,7 @@ pub fn set_hf_token(token: String) -> Result<String, String> {
     std::fs::create_dir_all(&hf_dir)
         .map_err(|e| format!("Failed to create directory {}: {e}", hf_dir.display()))?;
     let token_path = hf_dir.join("token");
-    std::fs::write(&token_path, trimmed)
+    crate::secrets::write_token(&token_path, trimmed)
         .map_err(|e| format!("Failed to write token file {}: {e}", token_path.display()))?;
     std::env::set_var("HF_TOKEN", trimmed);
     crate::logging::add_log_entry("INFO", "Hugging Face access token updated successfully.");

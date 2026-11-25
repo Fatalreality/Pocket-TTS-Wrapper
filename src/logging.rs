@@ -33,7 +33,48 @@ pub fn set_app_handle(handle: tauri::AppHandle) {
     }
 }
 
+/// Removes a Hugging Face token from a message before it is buffered, printed or emitted.
+///
+/// Two things are caught: the exact token this process holds, and anything shaped like one
+/// (`hf_` followed by a long run of token characters), so a token cannot reach the in-app
+/// console, a saved log or stderr even if some future code logs a request or a header.
+pub fn redact(message: &str) -> String {
+    let mut text = message.to_string();
+    if let Ok(token) = std::env::var("HF_TOKEN") {
+        let token = token.trim();
+        if token.len() >= 8 {
+            text = text.replace(token, "hf_***");
+        }
+    }
+    redact_token_shapes(&text)
+}
+
+fn redact_token_shapes(message: &str) -> String {
+    /// `hf_` plus this many token characters is a credential, not a word like `hf_hub`.
+    const MIN_TOKEN_BODY: usize = 20;
+    const PREFIX: &str = "hf_";
+
+    let mut out = String::with_capacity(message.len());
+    let mut rest = message;
+    while let Some(index) = rest.find(PREFIX) {
+        let (before, after) = rest.split_at(index + PREFIX.len());
+        out.push_str(before);
+        let body = after
+            .find(|c: char| !(c.is_ascii_alphanumeric() || c == '_' || c == '-'))
+            .unwrap_or(after.len());
+        if body >= MIN_TOKEN_BODY {
+            out.push_str("***");
+        } else {
+            out.push_str(&after[..body]);
+        }
+        rest = &after[body..];
+    }
+    out.push_str(rest);
+    out
+}
+
 pub fn add_log_entry(level: &str, message: &str) {
+    let message = redact(message);
     let now = SystemTime::now()
         .duration_since(SystemTime::UNIX_EPOCH)
         .map(|d| d.as_secs())
@@ -60,6 +101,26 @@ pub fn add_log_entry(level: &str, message: &str) {
         if let Some(app) = guard.as_ref() {
             let _ = app.emit("terminal_log", &entry);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::redact;
+
+    #[test]
+    fn tokens_are_removed_from_messages() {
+        let token = "hf_0123456789abcdef0123456789abcdef0123";
+        assert_eq!(redact(&format!("auth {token} here")), "auth hf_*** here");
+        // The same text again, as it would arrive from the environment check.
+        assert_eq!(redact("auth hf_*** here"), "auth hf_*** here");
+    }
+
+    #[test]
+    fn ordinary_words_are_left_alone() {
+        assert_eq!(redact("reading hf_hub cache"), "reading hf_hub cache");
+        assert_eq!(redact("token=hf_token"), "token=hf_token");
+        assert_eq!(redact("no prefix here"), "no prefix here");
     }
 }
 
@@ -97,7 +158,7 @@ impl log::Log for Logger {
             log::Level::Debug => "DEBUG",
             log::Level::Trace => "TRACE",
         };
-        let msg = format!("{}", record.args());
+        let msg = redact(&format!("{}", record.args()));
         add_log_entry(level, &msg);
         eprintln!("{level}: {msg}");
     }

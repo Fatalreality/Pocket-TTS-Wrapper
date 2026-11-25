@@ -16,6 +16,7 @@ mod logging;
 mod model;
 mod paths;
 mod rng;
+mod secrets;
 mod state;
 mod text;
 mod tokenizer;
