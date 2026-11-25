@@ -261,70 +261,42 @@
 
   function readSettings() {
     try {
-      return JSON.parse(localStorage.getItem(SETTINGS_KEY) || "{}") || {};
+      const stored = JSON.parse(localStorage.getItem(SETTINGS_KEY) || "{}") || {};
+      // A build that shipped an encrypted envelope left a value this reader cannot use, plus
+      // the key it was written with. Drop both rather than keep settings nothing can restore.
+      if (stored.v && stored.data) {
+        localStorage.removeItem(SETTINGS_KEY);
+        localStorage.removeItem(`${SETTINGS_KEY}:crypto-key`);
+        return {};
+      }
+      return stored;
     } catch {
       return {};
     }
   }
 
-  const SETTINGS_CRYPTO_KEY = `${SETTINGS_KEY}:crypto-key`;
-
-  function bytesToB64(bytes) {
-    let s = "";
-    bytes.forEach(b => { s += String.fromCharCode(b); });
-    return btoa(s);
-  }
-
-  function b64ToBytes(b64) {
-    const bin = atob(b64);
-    const out = new Uint8Array(bin.length);
-    for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
-    return out;
-  }
-
-  async function getOrCreateSettingsKey() {
-    let keyB64 = localStorage.getItem(SETTINGS_CRYPTO_KEY);
-    if (!keyB64) {
-      const raw = crypto.getRandomValues(new Uint8Array(32));
-      keyB64 = bytesToB64(raw);
-      localStorage.setItem(SETTINGS_CRYPTO_KEY, keyB64);
-    }
-    return crypto.subtle.importKey("raw", b64ToBytes(keyB64), "AES-GCM", false, ["encrypt", "decrypt"]);
-  }
-
-  async function encryptSettingsObject(obj) {
-    const key = await getOrCreateSettingsKey();
-    const iv = crypto.getRandomValues(new Uint8Array(12));
-    const plaintext = new TextEncoder().encode(JSON.stringify(obj));
-    const ciphertext = await crypto.subtle.encrypt({ name: "AES-GCM", iv }, key, plaintext);
-    return JSON.stringify({
-      v: 1,
-      iv: bytesToB64(iv),
-      data: bytesToB64(new Uint8Array(ciphertext)),
-    });
-  }
-
-  async function saveSettings() {
+  function saveSettings() {
     if (!els.temp) return;
     try {
-      const payload = {
-        language: els.language.value,
-        voice: selectedVoiceName,
-        gender: activeGenderFilter,
-        temp: els.temp.value,
-        eos: els.eos.value,
-        steps: els.steps.value,
-        maxtok: els.maxtok.value,
-        nc: els.nc.value,
-        ncUnset: els.nc.dataset.unset === "true",
-        tforce: els.tforce.checked,
-        quantize: els.quantize.checked,
-        preview: !!(els.previewVoices && els.previewVoices.checked),
-        minimizeToTray: !!(els.minimizeToTray && els.minimizeToTray.checked),
-        selectionPopup: !!(els.selectionPopup && els.selectionPopup.checked),
-      };
-      const encrypted = await encryptSettingsObject(payload);
-      localStorage.setItem(SETTINGS_KEY, encrypted);
+      localStorage.setItem(
+        SETTINGS_KEY,
+        JSON.stringify({
+          language: els.language.value,
+          voice: selectedVoiceName,
+          gender: activeGenderFilter,
+          temp: els.temp.value,
+          eos: els.eos.value,
+          steps: els.steps.value,
+          maxtok: els.maxtok.value,
+          nc: els.nc.value,
+          ncUnset: els.nc.dataset.unset === "true",
+          tforce: els.tforce.checked,
+          quantize: els.quantize.checked,
+          preview: !!(els.previewVoices && els.previewVoices.checked),
+          minimizeToTray: !!(els.minimizeToTray && els.minimizeToTray.checked),
+          selectionPopup: !!(els.selectionPopup && els.selectionPopup.checked),
+        })
+      );
     } catch {}
   }
 
@@ -372,6 +344,9 @@
       return {
         input: raw.input,
         output: raw.output,
+        // The settings the render started with: the backend keeps progress against them, so a
+        // resume with anything else is not the same job.
+        args: raw.args && typeof raw.args === "object" ? raw.args : {},
         at: typeof raw.at === "number" ? raw.at : Date.now(),
       };
     } catch {
@@ -385,6 +360,7 @@
         const stored = {
           input: String(job.input || ""),
           output: String(job.output || ""),
+          args: job.args && typeof job.args === "object" ? job.args : {},
           at: typeof job.at === "number" ? job.at : Date.now(),
         };
         localStorage.setItem(RESUME_KEY, JSON.stringify(stored));
