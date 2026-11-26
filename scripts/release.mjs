@@ -54,38 +54,70 @@ function notes(v) {
   return text.slice(bodyStart, next < 0 ? text.length : next).trim();
 }
 
+/**
+ * Rewrites the text of `path` with `pattern`, and fails unless the result now carries `expected`.
+ * A pattern that stopped matching would otherwise leave the old version in a file that ships,
+ * which is how the Cargo.lock rewrite once failed silently.
+ */
+function rewriteVersion(path, pattern, replacement, check, expected, what) {
+  const next = read(path).replace(pattern, replacement);
+  const found = next.match(check);
+  if (!found) fail(`no ${what} in ${path} to rewrite for ${expected}`);
+  if (found[1] !== expected) {
+    fail(`could not rewrite ${what} in ${path} to ${expected} (it reads ${found[1]})`);
+  }
+  return next;
+}
+
 function setVersion(v) {
   if (!/^\d+\.\d+\.\d+$/.test(v)) fail(`"${v}" is not a x.y.z version`);
 
   const conf = JSON.parse(read(TAURI_CONF));
   conf.version = v;
-  writeFileSync(TAURI_CONF, `${JSON.stringify(conf, null, 2)}\n`);
+  const confText = `${JSON.stringify(conf, null, 2)}\n`;
+  if (JSON.parse(confText).version !== v) fail(`no version in ${TAURI_CONF} to set to ${v}`);
 
-  writeFileSync(
+  const tomlText = rewriteVersion(
     CARGO_TOML,
-    read(CARGO_TOML).replace(/^version = "[^"]*"/m, `version = "${v}"`)
+    /^version = "[^"]*"/m,
+    `version = "${v}"`,
+    /^version = "([^"]*)"/m,
+    v,
+    "top-level version line"
   );
 
   // Cargo.lock carries the root package version too, and CI builds with --locked. A Windows
   // checkout has CRLF line endings, so the separator between the two lines has to allow \r.
-  const lock = read(CARGO_LOCK).replace(
+  const lockText = rewriteVersion(
+    CARGO_LOCK,
     /(name = "pocket-tts-app"\r?\nversion = ")[^"]*(")/,
-    `$1${v}$2`
+    `$1${v}$2`,
+    /name = "pocket-tts-app"\r?\nversion = "([^"]*)"/,
+    v,
+    "pocket-tts-app package version"
   );
-  const lockVersion = lock.match(/name = "pocket-tts-app"\r?\nversion = "([^"]*)"/);
-  if (!lockVersion) fail(`no pocket-tts-app package block in ${CARGO_LOCK} to version`);
-  if (lockVersion[1] !== v) {
-    fail(
-      `could not set the pocket-tts-app version in ${CARGO_LOCK} to ${v}` +
-        ` (it still reads ${lockVersion[1]})`
-    );
-  }
-  writeFileSync(CARGO_LOCK, lock);
 
-  writeFileSync(
-    README,
-    read(README).replace(/Pocket-TTS-[\d.]+-x64-setup\.exe/g, `Pocket-TTS-${v}-x64-setup.exe`)
+  const downloadName = `Pocket-TTS-${v}-x64-setup.exe`;
+  const readme = read(README);
+  if (!/Pocket-TTS-[\d.]+-x64-setup\.exe/.test(readme)) {
+    fail(`no "Pocket-TTS-<version>-x64-setup.exe" download name in ${README} to update`);
+  }
+  const nextReadme = readme.replace(/Pocket-TTS-[\d.]+-x64-setup\.exe/g, downloadName);
+  const stale = (nextReadme.match(/Pocket-TTS-[\d.]+-x64-setup\.exe/g) || []).find(
+    (name) => name !== downloadName
   );
+  if (stale) fail(`${README} still names ${stale} instead of ${downloadName}`);
+
+  // All four rewrites are built and checked before any file is written, so a pattern that stopped
+  // matching fails the run instead of leaving half the tree on the new version.
+  for (const [path, text] of [
+    [TAURI_CONF, confText],
+    [CARGO_TOML, tomlText],
+    [CARGO_LOCK, lockText],
+    [README, nextReadme],
+  ]) {
+    writeFileSync(path, text);
+  }
 
   if (!read(CHANGELOG).includes(`## [${v}]`)) {
     console.log(`note: ${CHANGELOG} has no "## [${v}]" section yet`);
