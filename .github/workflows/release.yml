@@ -37,7 +37,7 @@ jobs:
       - name: Node for the Tauri CLI
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: "20"
+          node-version: "24"
           cache: npm
 
       # Exact CLI version from package-lock.json; no npm script and no floating tag runs.
@@ -90,7 +90,7 @@ jobs:
       - name: Node
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: "20"
+          node-version: "24"
 
       - name: Download staged release
         uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
