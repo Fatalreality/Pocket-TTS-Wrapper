@@ -19,6 +19,7 @@ import {
   mkdirSync,
   readFileSync,
   readdirSync,
+  statSync,
   writeFileSync,
 } from "node:fs";
 import { basename, join } from "node:path";
@@ -177,6 +178,8 @@ async function publish(dir = "github-release") {
   const v = version();
   const tag = `v${v}`;
   const body = notes(v);
+  const names = readdirSync(dir).sort();
+  if (names.length === 0) fail(`${dir} is empty - run the stage command first`);
 
   let release;
   const existing = await fetch(`https://api.github.com/repos/${REPO}/releases/tags/${tag}`, {
@@ -184,13 +187,10 @@ async function publish(dir = "github-release") {
   });
   if (existing.ok) {
     release = await existing.json();
-    release = await api(`/repos/${REPO}/releases/${release.id}`, {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ name: `Pocket TTS ${v}`, body, draft: false, prerelease: false }),
-    });
     console.log(`updating existing release ${tag} (${release.id})`);
   } else {
+    // A new release starts as a draft, so a failed or interrupted upload is never visible
+    // to the updater as a release with some of its files missing.
     release = await api(`/repos/${REPO}/releases`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -199,11 +199,11 @@ async function publish(dir = "github-release") {
         target_commitish: "main",
         name: `Pocket TTS ${v}`,
         body,
-        draft: false,
+        draft: true,
         prerelease: false,
       }),
     });
-    console.log(`created release ${tag} (${release.id})`);
+    console.log(`created draft release ${tag} (${release.id})`);
   }
 
   const upload = async (name) => {
@@ -224,9 +224,27 @@ async function publish(dir = "github-release") {
     console.log(`  uploaded ${name} (${asset.size} bytes)`);
   };
 
-  for (const name of readdirSync(dir).sort()) {
+  for (const name of names) {
     await upload(name);
   }
+
+  // Only publish once GitHub reports every staged file at the size that was sent: a release
+  // the updater can see always has its whole set of assets behind it.
+  const assets = await api(`/repos/${REPO}/releases/${release.id}/assets`);
+  for (const name of names) {
+    const expected = statSync(join(dir, name)).size;
+    const asset = assets.find((a) => a.name === name);
+    if (!asset) fail(`${name} is missing from the release; it is still a draft`);
+    if (asset.size !== expected) {
+      fail(`${name} uploaded as ${asset.size} bytes, not ${expected}; it is still a draft`);
+    }
+  }
+
+  release = await api(`/repos/${REPO}/releases/${release.id}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name: `Pocket TTS ${v}`, body, draft: false, prerelease: false }),
+  });
   console.log(`published ${release.html_url}`);
 }
 

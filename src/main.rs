@@ -14,7 +14,9 @@ mod download;
 mod encode;
 mod logging;
 mod model;
+mod paths;
 mod rng;
+mod secrets;
 mod state;
 mod text;
 mod tokenizer;
@@ -532,7 +534,13 @@ fn hide_popup(app: tauri::AppHandle) {
 fn get_cached_preview(language: String, voice: String, app: tauri::AppHandle) -> Option<String> {
     use tauri::Manager;
     use base64::{Engine as _, engine::general_purpose::STANDARD};
-    let filename = format!("{}_{}.ogg", language, voice);
+    // Both parts become a file name, so anything but a plain id is refused rather than
+    // allowed to walk out of the previews folder.
+    let filename = format!(
+        "{}_{}.ogg",
+        crate::paths::safe_name(&language)?,
+        crate::paths::safe_name(&voice)?
+    );
     let mut candidates: Vec<std::path::PathBuf> = Vec::new();
     if let Ok(dir) = app.path().resource_dir() { candidates.push(dir.join("previews").join(&filename)); }
     candidates.push(std::path::PathBuf::from("previews").join(&filename));

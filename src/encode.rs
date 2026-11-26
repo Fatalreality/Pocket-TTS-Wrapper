@@ -181,7 +181,14 @@ impl Mp3Writer {
                 self.buffer.spare_capacity_mut(),
             )
             .map_err(|e| anyhow::anyhow!("LAME: encode failed ({e:?})"))?;
-        // SAFETY: LAME reports how many bytes it wrote into the spare capacity it was given.
+        // The count comes from the encoder; grow the vector only when it is within the
+        // capacity we handed over, so a wrong count can never read past the allocation.
+        anyhow::ensure!(
+            written <= self.buffer.capacity(),
+            "LAME wrote {written} bytes into a {}-byte buffer",
+            self.buffer.capacity()
+        );
+        // SAFETY: the first `written` bytes were initialised by the encoder and checked above.
         unsafe { self.buffer.set_len(written) };
         self.file.write_all(&self.buffer)?;
         self.samples += pcm.len() as u64;
@@ -194,7 +201,12 @@ impl Mp3Writer {
             .encoder
             .flush::<mp3lame_encoder::FlushNoGap>(tail.spare_capacity_mut())
             .map_err(|e| anyhow::anyhow!("LAME: flush failed ({e:?})"))?;
-        // SAFETY: as above - the encoder reports the bytes it wrote.
+        anyhow::ensure!(
+            written <= tail.capacity(),
+            "LAME wrote {written} bytes into a {}-byte buffer",
+            tail.capacity()
+        );
+        // SAFETY: as above - the encoder reports the bytes it wrote, checked against capacity.
         unsafe { tail.set_len(written) };
         self.file.write_all(&tail)?;
         self.file.flush()?;

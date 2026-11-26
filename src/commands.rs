@@ -573,14 +573,22 @@ pub fn save_audio(
     let b64 = wav_base64
         .or(wavBase64)
         .ok_or_else(|| "Missing audio base64 data".to_string())?;
-    let path = file_path
+    if b64.len() > crate::paths::MAX_PAYLOAD_CHARS {
+        return Err(format!(
+            "audio payload is too large ({} characters, limit {})",
+            b64.len(),
+            crate::paths::MAX_PAYLOAD_CHARS
+        ));
+    }
+    let requested = file_path
         .or(filePath)
         .ok_or_else(|| "Missing target file path".to_string())?;
+    let path = crate::paths::output_file(&requested)?;
 
     let wav_bytes = BASE64.decode(&b64).map_err(|e| format!("Base64 decode error: {e}"))?;
     validate_wav_bytes(&wav_bytes)?;
 
-    let codec = Codec::for_path(Path::new(&path)).map_err(|e| e.to_string())?;
+    let codec = Codec::for_path(&path).map_err(|e| e.to_string())?;
     let bytes = if codec == Codec::Wav {
         wav_bytes
     } else {
@@ -589,19 +597,17 @@ pub fn save_audio(
         crate::encode::encode_in_memory(codec, &pcm, sample_rate).map_err(|e| e.to_string())?
     };
 
-    if let Some(parent) = Path::new(&path).parent() {
-        let _ = std::fs::create_dir_all(parent);
-    }
     std::fs::write(&path, &bytes).map_err(|e| format!("File write error: {e}"))?;
+    let saved = crate::paths::display(&path);
     crate::logging::add_log_entry(
         "INFO",
         &format!(
-            "Saved {} audio to {path} ({} bytes)",
+            "Saved {} audio to {saved} ({} bytes)",
             codec.name(),
             bytes.len()
         ),
     );
-    Ok(path)
+    Ok(saved)
 }
 
 /// Exports a voice from an audio file to a .safetensors state file. Slow: loads the model and
@@ -623,6 +629,10 @@ pub async fn export_voice(
     let e_path = export_path
         .or(exportPath)
         .ok_or_else(|| "Missing export_path".to_string())?;
+    let a_path = crate::paths::input_file(&a_path)
+        .map(|p| crate::paths::display(&p))?;
+    let e_path = crate::paths::output_file(&e_path)
+        .map(|p| crate::paths::display(&p))?;
     tauri::async_runtime::spawn_blocking(move || {
         crate::cli::export_voice_with(
             language.as_deref(),
@@ -645,6 +655,11 @@ pub fn get_hf_status() -> Result<HfStatus, String> {
         .or_else(|_| std::env::var("HOME"))
         .unwrap_or_else(|_| ".".into());
     let token_path = std::path::PathBuf::from(&home).join(".cache").join("huggingface").join("token");
+    // A token file written by `hf auth login` still carries whatever permissions the folder
+    // had; tighten it on sight. Best effort: a failure here only means it stays as it was.
+    if token_path.exists() {
+        let _ = crate::secrets::restrict(&token_path);
+    }
     let env_token = std::env::var("HF_TOKEN").ok();
 
     let (has_token, token_str) = if let Ok(content) = std::fs::read_to_string(&token_path) {
@@ -678,6 +693,9 @@ pub fn get_hf_status() -> Result<HfStatus, String> {
 }
 
 /// Sets Hugging Face access token by writing to `~/.cache/huggingface/token` and `HF_TOKEN`.
+///
+/// The token file is restricted to the current user before the token is written to it, and the
+/// token is never logged: not by this command, and not by anything that runs afterwards.
 #[tauri::command]
 pub fn set_hf_token(token: String) -> Result<String, String> {
     let trimmed = token.trim();
@@ -691,7 +709,7 @@ pub fn set_hf_token(token: String) -> Result<String, String> {
     std::fs::create_dir_all(&hf_dir)
         .map_err(|e| format!("Failed to create directory {}: {e}", hf_dir.display()))?;
     let token_path = hf_dir.join("token");
-    std::fs::write(&token_path, trimmed)
+    crate::secrets::write_token(&token_path, trimmed)
         .map_err(|e| format!("Failed to write token file {}: {e}", token_path.display()))?;
     std::env::set_var("HF_TOKEN", trimmed);
     crate::logging::add_log_entry("INFO", "Hugging Face access token updated successfully.");
@@ -765,6 +783,13 @@ pub async fn render_text_file(
     let output = output_path
         .or(outputPath)
         .ok_or_else(|| "Missing output path".to_string())?;
+    let input = crate::paths::input_file(&input)
+        .map(|p| crate::paths::display(&p))?;
+    let output = crate::paths::output_file(&output)
+        .map(|p| crate::paths::display(&p))?;
+    if input.eq_ignore_ascii_case(&output) {
+        return Err("the text file and the audio file must be different files".to_string());
+    }
     let noise_clamp = noise_clamp.or(noiseClamp);
     let eos_threshold = eos_threshold.or(eosThreshold);
     let sampler_decode_steps = sampler_decode_steps.or(samplerDecodeSteps);
@@ -1046,9 +1071,13 @@ pub fn save_logs(
     file_path: Option<String>,
     filePath: Option<String>,
 ) -> Result<String, String> {
-    let path = file_path
+    if content.len() > crate::paths::MAX_PAYLOAD_BYTES {
+        return Err("the log is too large to save".to_string());
+    }
+    let requested = file_path
         .or(filePath)
         .ok_or_else(|| "Missing target file path".to_string())?;
+    let path = crate::paths::output_file(&requested)?;
     let header = format!(
         "Pocket TTS {} diagnostic log\nGenerated: {}\nPlatform: {} {}\nCPU threads: {}\n\n",
         env!("CARGO_PKG_VERSION"),
@@ -1057,13 +1086,11 @@ pub fn save_logs(
         std::env::consts::ARCH,
         std::thread::available_parallelism().map_or(1, |n| n.get()),
     );
-    if let Some(parent) = Path::new(&path).parent() {
-        let _ = std::fs::create_dir_all(parent);
-    }
     std::fs::write(&path, format!("{header}{content}"))
         .map_err(|e| format!("File write error: {e}"))?;
-    crate::logging::add_log_entry("INFO", &format!("Saved logs to {path}"));
-    Ok(path)
+    let saved = crate::paths::display(&path);
+    crate::logging::add_log_entry("INFO", &format!("Saved logs to {saved}"));
+    Ok(saved)
 }
 
 /// Asks the release endpoint whether a newer version exists.

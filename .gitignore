@@ -1,5 +1,6 @@
-# Rust / Tauri build output
+# Rust / Tauri build output and the pinned CLI's install tree
 target/
+node_modules/
 gen/
 **/*.rs.bak
 
