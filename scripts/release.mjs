@@ -66,14 +66,21 @@ function setVersion(v) {
     read(CARGO_TOML).replace(/^version = "[^"]*"/m, `version = "${v}"`)
   );
 
-  // Cargo.lock carries the root package version too, and CI builds with --locked.
-  writeFileSync(
-    CARGO_LOCK,
-    read(CARGO_LOCK).replace(
-      /(name = "pocket-tts-app"\nversion = ")[^"]*(")/,
-      `$1${v}$2`
-    )
+  // Cargo.lock carries the root package version too, and CI builds with --locked. A Windows
+  // checkout has CRLF line endings, so the separator between the two lines has to allow \r.
+  const lock = read(CARGO_LOCK).replace(
+    /(name = "pocket-tts-app"\r?\nversion = ")[^"]*(")/,
+    `$1${v}$2`
   );
+  const lockVersion = lock.match(/name = "pocket-tts-app"\r?\nversion = "([^"]*)"/);
+  if (!lockVersion) fail(`no pocket-tts-app package block in ${CARGO_LOCK} to version`);
+  if (lockVersion[1] !== v) {
+    fail(
+      `could not set the pocket-tts-app version in ${CARGO_LOCK} to ${v}` +
+        ` (it still reads ${lockVersion[1]})`
+    );
+  }
+  writeFileSync(CARGO_LOCK, lock);
 
   writeFileSync(
     README,
