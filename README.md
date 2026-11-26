@@ -40,7 +40,7 @@ Made as a side project because a UI is nicer than a command line.
 
 ## Install
 
-Download `Pocket-TTS-1.1.0-x64-setup.exe` from
+Download `Pocket-TTS-1.2.0-x64-setup.exe` from
 [Releases](https://github.com/Fatalreality/Pocket-TTS-Wrapper/releases), run it, and launch
 **Pocket TTS** from the Start menu.
 

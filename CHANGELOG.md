@@ -4,6 +4,44 @@ All notable changes to Pocket TTS (the Windows wrapper) are documented here.
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-11-26
+
+The hardening release: the token, the file handling and the release pipeline are locked down, and
+selecting text anywhere now offers to speak it.
+
+### Added
+- **Selection popup**: selecting text in another app shows a small window with the selection and
+  three actions — generate and save it, play it live, or open the words in the app. The `Show
+  selection popup` checkbox in Settings turns it off.
+- **Minimize to tray on close**: closing the main window keeps the app, and the `Ctrl+Alt+S`
+  clipboard shortcut, alive instead of quitting; the Settings checkbox turns it off.
+
+### Changed
+- Voice previews play bundled recordings (`previews/*.ogg`, shipped in the installer), so
+  auditioning a voice no longer waits on the engine.
+- The content security policy no longer allows remote stylesheets, fonts or `ws:`/`wss:`
+  connections; the UI loads only what ships with the app.
+
+### Security
+- The Hugging Face token is written to a temporary file, restricted to a single access-control
+  entry, and only then moved into place, so other accounts cannot read it even briefly.
+- Logs and error messages redact the token itself and any `hf_`-shaped value.
+- File commands reject oversized selections and payloads, refuse downloads above 4 GiB, and
+  validate output paths before writing.
+- Settings are stored as plain text on purpose: the key the scanner wanted sat beside the
+  ciphertext, and the settings hold nothing secret.
+- Release builds are compiled unsigned, and the updater package is signed in a step that shares no
+  environment with the compiler, the package manager or any downloaded code.
+
+### Fixed
+- The advanced sliders survive a restart again, and a resumed render sends the settings it was
+  started with (temperature, EOS threshold, steps, quantize), so an interrupted render continues
+  instead of being refused as a different job.
+
+### Tooling
+- Every workflow action runs on its Node.js 24 release, clearing the Node.js 20 deprecation
+  warnings from the runs.
+
 ## [1.1.0] - 2026-11-24
 
 The workflow release: generation and long renders can now be stopped and picked up again, voices
